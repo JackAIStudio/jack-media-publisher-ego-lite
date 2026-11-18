@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src blob:; media-src blob:; script-src 'unsafe-inline'; style-src 'unsafe-inline'; form-action 'none'; base-uri 'none'">
+  <title>本地草稿演练</title>
+  <style>
+    :root { color-scheme: light dark; font: 16px/1.6 'Atkinson Hyperlegible Next', system-ui, sans-serif; }
+    body { max-width: 37rem; margin: 2rem auto; padding: 0 1rem; }
+    label { display: block; margin: .8rem 0; }
+    input, select, button { font: inherit; }
+    video, img { width: 5.25rem; vertical-align: middle; }
+    pre { white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>本地草稿演练</h1>
+    <p>草稿保存在当前标签页，可刷新复查。</p>
+    <section id="editor" aria-label="草稿编辑">
+      <label>视频 <input id="clip" type="file" accept="video/*"></label>
+      <label>竖封面 <input id="cover" type="file" accept="image/*"></label>
+      <video id="preview" preload="metadata" muted hidden aria-label="样片预览"></video>
+      <img id="thumbnail" alt="已选封面" hidden>
+      <label>标题 <input id="title" type="text" autocomplete="off"></label>
+      <label>话题 <select id="topic"><option value="">选择话题</option><option>剪辑教程</option></select></label>
+      <button id="save" type="button" disabled>存草稿</button>
+    </section>
+    <section id="library" aria-labelledby="list-title" hidden>
+      <h2 id="list-title">草稿列表</h2>
+      <button id="reopen" type="button"></button>
+      <pre id="details" hidden></pre>
+    </section>
+  </main>
+  <script>
+    const byId = id => document.getElementById(id);
+    const storageKey = 'jack-publisher-lab:draft:v1';
+    const clip = byId('clip');
+    const cover = byId('cover');
+    const preview = byId('preview');
+    const thumbnail = byId('thumbnail');
+    const title = byId('title');
+    const topic = byId('topic');
+    const save = byId('save');
+
+    function updateSave() {
+      const videoReady = clip.files.length && Number.isFinite(preview.duration) && preview.duration > 0;
+      const imageReady = cover.files.length && thumbnail.complete && thumbnail.naturalWidth > 0;
+      save.disabled = !(videoReady && imageReady && title.value.trim() && topic.value);
+    }
+
+    function previewSelection(input, element) {
+      const previous = element.getAttribute('src');
+      if (previous) URL.revokeObjectURL(previous);
+      const file = input.files[0];
+      element.hidden = !file;
+      save.disabled = true;
+      if (file) element.src = URL.createObjectURL(file);
+      else element.removeAttribute('src');
+    }
+
+    clip.addEventListener('change', () => previewSelection(clip, preview));
+    cover.addEventListener('change', () => previewSelection(cover, thumbnail));
+    preview.addEventListener('loadedmetadata', updateSave);
+    thumbnail.addEventListener('load', updateSave);
+    title.addEventListener('input', updateSave);
+    topic.addEventListener('change', updateSave);
+
+    function showLibrary(draft) {
+      byId('editor').hidden = true;
+      byId('library').hidden = false;
+      byId('reopen').textContent = draft.title;
+    }
+
+    save.addEventListener('click', () => {
+      const videoFile = clip.files[0];
+      const coverFile = cover.files[0];
+      const draft = {
+        title: title.value.trim(), topic: topic.value,
+        video: { name: videoFile.name, bytes: videoFile.size, duration: preview.duration },
+        cover: { name: coverFile.name, bytes: coverFile.size, width: thumbnail.naturalWidth, height: thumbnail.naturalHeight }
+      };
+      sessionStorage.setItem(storageKey, JSON.stringify(draft));
+      showLibrary(draft);
+    });
+
+    byId('reopen').addEventListener('click', () => {
+      const details = byId('details');
+      details.textContent = JSON.stringify(JSON.parse(sessionStorage.getItem(storageKey)), null, 2);
+      details.hidden = false;
+    });
+    const existing = sessionStorage.getItem(storageKey);
+    if (existing) showLibrary(JSON.parse(existing));
+  </script>
+</body>
+</html>
