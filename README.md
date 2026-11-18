@@ -13,7 +13,7 @@
      "$HOME/.agents/skills/jack-media-publisher-ego-lab"
    ```
 
-3. 在助手的斜杠菜单里选择 `/jack-media-publisher-ego-lab`。平台字段、标题规则、B 站分区和验收说明都随仓库安装。
+3. 在助手的斜杠菜单里选择 `/jack-media-publisher-ego-lab`。平台字段、标题规则、B 站分区、踩坑记录和验收说明都随仓库安装。
 
 已有本仓库的克隆可用以下命令更新。
 
@@ -29,13 +29,19 @@ git -C "$HOME/.agents/skills/jack-media-publisher-ego-lab" pull --ff-only
 /jack-media-publisher-ego-lab 离线演练
 ```
 
-准备真实草稿时，附上本地成片，写明目标平台和原标题。已有封面可以一起提供，有指定话题也一并给出。例如：
+准备真实草稿时，附上本地成片，写明目标平台和原标题。已有封面可以一起提供，有指定话题或明确说明是否含 AI 生成素材也一并给出。例如：
 
 ```text
-/jack-media-publisher-ego-lab 把附上的成片准备成抖音和 B 站草稿，原标题用「一纸成灯」。使用附上的三张封面，话题根据片子选，保存后复开给我检查。
+/jack-media-publisher-ego-lab 把附上的成片准备成小红书、抖音、B 站和视频号草稿，原标题用「一纸成灯」。使用附上的三张封面，话题根据片子选，成片含 AI 生成画面，保存后复开给我检查。
 ```
 
-助手按素材实际尺寸选择封面。抖音使用 4:3 横封面和 3:4 竖封面，B 站使用 4:3 首页封面和 16:9 空间封面。素材探测可用 FFmpeg 中的 `ffprobe`。
+助手按成片实际分辨率（含旋转信息）与封面像素自动映射：
+- **小红书**：竖屏视频（高 > 宽）默认用 3:4 竖封面，横屏视频（宽 > 高）默认用 4:3 横封面（若用户指定其他比例或仅提供某一张则按实际处理）。
+- **抖音**：同时使用 4:3 横封面和 3:4 竖封面。
+- **B 站**：使用 4:3 首页推荐封面和 16:9 个人空间封面。
+- **微信视频号**：竖屏成片使用共用 3:4 卡片；横屏成片使用 3:4 个人主页卡片和 4:3 分享卡片。
+
+素材探测可用 FFmpeg 中的 `ffprobe`。若未说明目标平台、AI 生成素材事实或存在同名历史空间，助手会先给出紧凑对齐清单确认后再动手。
 
 ## 草稿在哪里
 
@@ -46,6 +52,14 @@ git -C "$HOME/.agents/skills/jack-media-publisher-ego-lab" pull --ff-only
 | B 站 | 点「存草稿」，从「稿件管理 → 草稿」复开目标条目。 |
 | 微信视频号 | 点「保存草稿」，在另一个标签页从草稿箱复核。原编辑页最后设置视频标注，留给作者发表。 |
 
-2026-11-18 在 macOS 的 Ego Lite 上用一条 50 秒横屏成片完成了四平台存稿与复开。抖音和 B 站补齐双封面后又各复查了一次。视频号草稿复开时需要再次核对视频标注。[完整操作规则](<SKILL.md>) · [验收依据](<references/verification.md>)
+## 本机规则自检
+
+改动平台规则或参考文档后，可在仓库根目录运行规则回归测试：
+
+```sh
+python3 -IB -m unittest discover -s tests -p 'test_*.py' -v
+```
+
+[完整操作规则](<SKILL.md>) · [平台暗坑记录](<references/gotchas.md>) · [验收依据](<references/verification.md>)
 
 本项目沿用了 Jack 的四平台发布偏好，草稿辨认与中断续做参考了 Oil 的发布流程。[Jack Media Publisher](https://github.com/JackAIStudio/jack-media-publisher) · [Oil Video Publisher](https://github.com/oil-oil/video-publisher-skill)

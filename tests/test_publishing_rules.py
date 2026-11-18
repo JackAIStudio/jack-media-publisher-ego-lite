@@ -1,0 +1,84 @@
+"""保护发布文档间的核心声明、分区、封面槽、小红书横竖屏偏好及链接完整性规则。"""
+import re
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+TABLE = (ROOT / 'references/platforms.md').read_text(encoding='utf-8')
+
+
+class PublishingRules(unittest.TestCase):
+    def test_declarations(self):
+        section = TABLE.split('\n## 内容声明\n', 1)[1].split('\n## ', 1)[0]
+        branches = {
+            '小红书': ('笔记含AI合成内容', '不选'),
+            '抖音': ('内容由AI生成', '无需添加自主声明'),
+            'B站': ('含AI生成内容', '内容无需标注'),
+            '微信视频号': ('含AI生成内容', '无需标注'),
+        }
+        for platform, labels in branches.items():
+            with self.subTest(platform=platform):
+                row, = (line for line in section.splitlines() if line.startswith('| ' + platform + ' |'))
+                for label in labels:
+                    self.assertIn(label, row)
+        for path in [ROOT / 'SKILL.md', ROOT / 'README.md', *sorted((ROOT / 'references').glob('*.md'))]:
+            with self.subTest(file=path.name):
+                text = path.read_text(encoding='utf-8')
+                self.assertNotRegex(text, r'一律「无需标注」|原创声明\s+默认不开|不要从视频内容自行推断是否勾选原创')
+
+    def test_bilibili_category_snapshot(self):
+        text = (ROOT / 'references/bilibili-categories.md').read_text(encoding='utf-8')
+        categories = {}
+        for line in text.splitlines():
+            cells = [cell.strip() for cell in line.split('|')[1:-1]]
+            if not cells or not cells[0].isdigit():
+                continue
+            for i in range(0, len(cells), 2):
+                order, name = int(cells[i]), cells[i + 1]
+                self.assertNotIn(order, categories)
+                categories[order] = name
+        self.assertEqual(sorted(categories), list(range(1, 31)))
+        self.assertEqual(len(set(categories.values())), 30)
+        self.assertEqual([categories[n] for n in (1, 11, 12, 28, 30)], ['影视', '人工智能', '科技数码', 'vlog', '生活经验'])
+
+    def test_wechat_cover_slots(self):
+        section = TABLE.split('\n### 视频号封面\n', 1)[1].split('\n---', 1)[0]
+        portrait, = (line for line in section.splitlines() if line.startswith('| 竖屏'))
+        landscape, = (line for line in section.splitlines() if line.startswith('| 横屏'))
+        self.assertRegex(portrait, r'1 个.*3:4.*共用')
+        self.assertRegex(landscape, r'2 个.*个人主页卡片 3:4.*分享卡片 4:3')
+        for path in [ROOT / 'SKILL.md', *sorted((ROOT / 'references').glob('*.md'))]:
+            with self.subTest(file=path.name):
+                text = path.read_text(encoding='utf-8')
+                self.assertNotRegex(text, r'视频号[^\n]*(?:只剩单一|只剩这一个|两个都要变)|横屏封面在视频号[^\n]*没有槽可放')
+
+    def test_xiaohongshu_orientation_cover_rule(self):
+        for rel in ('SKILL.md', 'README.md', 'references/platforms.md', 'references/verification.md'):
+            text = (ROOT / rel).read_text(encoding='utf-8')
+            with self.subTest(file=rel):
+                self.assertRegex(text, r'竖屏[^\n]*3:4')
+                self.assertRegex(text, r'横屏[^\n]*4:3')
+                self.assertNotRegex(text, r'给了封面时默认用\s*3:4|封面默认用\s*3:4\s*竖图')
+
+    def test_markdown_links_and_anchors(self):
+        for path in [ROOT / 'SKILL.md', ROOT / 'README.md', *sorted((ROOT / 'references').glob('*.md'))]:
+            text = path.read_text(encoding='utf-8')
+            for match in re.finditer(r'\[[^\]]+\]\((?:<([^>]+)>|([^)\s]+))\)', text):
+                target = match.group(1) or match.group(2)
+                if target.startswith(('http://', 'https://')):
+                    continue
+                path_part, _, anchor = target.partition('#')
+                resolved = (path.parent / path_part).resolve() if path_part else path
+                with self.subTest(source=path.name, target=target):
+                    self.assertTrue(resolved.exists(), f'Missing link target: {resolved}')
+                    if anchor:
+                        target_text = resolved.read_text(encoding='utf-8')
+                        headings = [
+                            re.sub(r'[^\w\u4e00-\u9fff\- ]+', '', h).strip().lower().replace(' ', '-')
+                            for h in re.findall(r'^#+\s+(.+)$', target_text, re.M)
+                        ]
+                        self.assertIn(anchor.lower(), headings, f'Missing anchor #{anchor} in {resolved.name}')
+
+
+if __name__ == '__main__':
+    unittest.main()
