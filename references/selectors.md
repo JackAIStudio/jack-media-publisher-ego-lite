@@ -1,6 +1,6 @@
 # Ego Lite 页面控件与选择器
 
-用 `ego-browser skill` 取得本机 API 用法。每次切换编辑页、封面卡或弹窗后，重新观察当前页。控件优先使用当前 `page.snapshot()` 返回的实时 `ref`，以下实测 CSS 选择器与 DOM 特征用于精确过滤目标、复核边界条件，以及通过 `page.evaluate()` 回读状态。以下定位依据来自 2026-09 至 2026-11-18 网页实测。
+用 `ego-browser skill` 取得本机 API 用法。每次切换编辑页、封面卡或弹窗后，重新观察当前页。控件优先使用当前 `page.snapshot()` 返回的实时 `ref`，以下实测 CSS 选择器与 DOM 特征用于精确过滤目标、复核边界条件，以及通过 `page.evaluate()` 回读状态。以下定位依据来自 2026-09 至 2026-11-19 网页实测。
 
 ---
 
@@ -63,27 +63,27 @@ document.execCommand('insertText', false, '要填的内容'); // 清空用 'dele
 
 ### 内容声明与原创授权控件
 
-- **小红书**：读内容类型声明行 `.d-select` 显示文本（留空时显示占位符「添加内容类型声明」）；原创声明的原生 `<input type="checkbox">` 为 `0×0`，**应点击可见开关 `.custom-switch-card .d-switch`**，并在《原创声明须知》弹窗中勾选 `.originalContainer .d-checkbox-simulator` 后点「声明原创」。
+- **小红书**：读内容类型声明行 `.d-select` 显示文本（留空时显示占位符「添加内容类型声明」）；原创声明的原生 `<input type="checkbox">` 为 `0×0`，**必须精准点击 `.original-wrapper .d-switch`**（不要宽泛点 `.custom-switch-card .d-switch`，该选择器同时命中「定时发布」），并在《原创声明须知》弹窗中勾选 `.originalContainer .d-checkbox-simulator` 后点「声明原创」。底部「暂存离开」位于 `<xhs-publish-btn>` 内，直接用 `page.click('text="暂存离开"')` 可自动穿透 shadow DOM。
 - **抖音**：点击自主声明并确认弹窗后，回读表单上 `.selectBox-buZRzi` 的文本；原创若「无此项」据实记录。
-- **B站**：打开「创作声明」在六个 `.bcc-option` 中核对选中标记，收起后回读该行 `input.bcc-select-input-inner` 显示值；下方「是否添加内容授权声明（非必选）」内 `.auth-content`（「内容为自制：未经作者允许，禁止转载」）就在同一 `.bcc-select-option-list` 下拉内，实测可与「含AI生成内容」同时勾存（选中后含 `.option-text-selected`）。
-- **微信视频号**：收起候选菜单后读取「视频标注」按钮文本（「含AI生成内容」或占位符「选择视频标注」），并核对「声明原创」（`.declare-original-checkbox` + `.declare-original-dialog` 确认弹窗）与「位置」（表单 `.post-position-wrap .location-name` 设为「不显示位置」）。详情见 [草稿复查与交接](<verification.md#草稿复查与交接>)。
+- **B站**：打开「创作声明」在六个 `.bcc-option` 中直接 DOM 精准点击目标项（如「含AI生成内容」或「内容无需标注」），收起后回读该行 `input.bcc-select-input-inner` 与 `.bcc-option.selected`；下方「是否添加内容授权声明（非必选）」内 `.auth-content`（「内容为自制：未经作者允许，禁止转载」）就在同一 `.bcc-select-option-list` 下拉内，实测可与「含AI生成内容」或「内容无需标注」同时勾存（选中后含 `.option-text-selected`）。
+- **微信视频号**：收起候选菜单后读取「视频标注」按钮文本（「含AI生成内容」「无需标注」或占位符「选择视频标注」），并核对「声明原创」（`.declare-original-checkbox` + 仅过滤 `height > 80` 的可见 `.declare-original-dialog, .weui-desktop-dialog` 确认弹窗）与「位置」（点击 `.post-position-wrap .location-name` 后直接 `page.click('text="不显示位置"')`）。草稿箱列表直达路径为 `https://channels.weixin.qq.com/platform/post/draftListManager`（需 `waitForFunction` 等 `wujie-app` 渲染）。详情见 [草稿复查与交接](<verification.md#草稿复查与交接>)。
 
 ---
 
 ## 话题与分区
 
 ### 小红书
-1. 点击 `button.contentBtn.topic-btn`（原生话题按钮）→ 编辑器插入 `#`；
+1. **先滚动并聚焦正文 `div.tiptap.ProseMirror` 上部区域**（避开底部悬浮 `<xhs-publish-btn>` 拦截点击，且防止关键词误敲进标题框），再点击 `button.contentBtn.topic-btn`（原生话题按钮）→ 编辑器插入 `#`；
 2. 用键盘输入查询词（不要先清空正文）；
-3. 等候本轮建议面板出现并稳定（先出现的可能是旧建议），精确核对名称后**重新快照取当前项 `ref` 点击**；
+3. 等候本轮 `.tippy-box .item` 建议面板出现并稳定（先出现的可能是旧建议），精确核对名称后点击；
 4. 在正文内回读 `a.tiptap-topic`（或 `data-topic` 中的 `name`）。
 
 ### 抖音
-每轮从最新快照取 `button "#添加话题"` 的 `ref` 点击，输入查询词。候选可能附带浏览量数字，精确核对词条名后从新快照点击选定；随后在简介内回读 `[data-mention="#"]` 文本，移出已选实体再打下一个词。
+每轮点击 `text="#添加话题"`（或从最新快照取 `ref`），输入查询词。候选浮层可能附带播放量数字，排除编辑器自身后按精确名优先点击；随后在简介内回读 `[data-mention="#"]` / `[data-mention]` 文本，移出已选实体再打下一个词。
 
 ### B站
-- **标签**：先清理平台自动填充的无关标签（点击该标签 `.label-item-v2-container` 内的 `svg.close`，**空框切勿按 Backspace**）；随后在标签框逐个输入目标标签按 Enter，回读 `.label-item-v2-content`。遇到「仅话题」词回车静默消失时，走「参与话题 → 搜索更多话题」精确选词确认，仍不成则记作待办，不悄悄改词。
-- **投稿分区**：打开「分区」下拉，只在当前可见的 `.drop-list-v2-container.human-type-list` 中读取 `.drop-list-v2-content-wrp` 里的 `.drop-list-v2-item .item-cont-main` 选项，选中后收起并回读分区显示值。同名词也可能在 `.tag-pre-wrp` 标签区出现，需各自核对。
+- **标签**：先清理平台自动填充的无关标签（先 `scrollIntoView`，再用鼠标点击该标签 `.label-item-v2-container` 内关闭按钮的坐标，**不要直接对 `<svg>` 调 `.click()`，空框切勿按 Backspace**）；随后在标签框逐个输入目标标签按 Enter，回读 `.label-item-v2-content`。遇到「仅话题」词回车静默消失时，走「参与话题 → 搜索更多话题」精确选词确认，仍不成则记作待办，不悄悄改词。
+- **投稿分区**：先 `scrollIntoView` 再打开 `.select-controller` 下拉，只在当前可见的 `.drop-list-v2-container.human-type-list` 中读取 `.drop-list-v2-content-wrp` 里的 `.drop-list-v2-item .item-cont-main` 选项，选中后收起并回读分区显示值。同名词也可能在 `.tag-pre-wrp` 标签区出现，需各自核对。
 
 ### 微信视频号
 在 `div.input-editor` 描述编辑器里直接写入 `#话题`（按需补空格分段），从同一编辑器内的 `span.hl.topic` 回读平台已识别的高亮话题名称。
@@ -115,13 +115,13 @@ const isPanelActive = id =>
 ```
 
 操作流程：
-1. 若打开编辑器时先出现「智能生成封面」弹窗，先点「不使用」；
+1. 滚到 `.cover-content`，若页面尚未抽帧出默认图，入口为空槽 `.cover-empty-pill` / `.cover-slot`；已抽帧时为「更改封面」；点击打开编辑器后若先出现「智能生成封面」弹窗，先点「不使用」；
 2. 点击目标面板并验证 `isPanelActive('#editor_4_3')` 或 `isPanelActive('#editor_16_9')` 为 `true` 后，再向该激活面板选图；
 3. 点完成按钮 `div.button.submit`；若提示是否将 4:3 同步到 16:9，**必须选「不同步，手动编辑」**；
 4. 返回主表单 `.cover-content`（主卡缩略图用 `.cover-img` 的 CSS `background-image` 渲染，非 `<img>`）读回 `coverList` 绑定：`extra` 对应 4:3 首页图、`main` 对应 16:9 空间图（保存复开同一 `draftId` 后，图片资源常由 `edited` 转入 `origin`）。
 
 ### 抖音：横竖两个 tab
-点击「竖封面3:4」或「横封面4:3」卡片打开编辑器，注意「设置竖封面」/「设置横封面」tab 切换后可能弹窗「使用此素材作为封面？」→ 点「直接编辑」。上传区为 `"点击上传文件或拖拽文件到这里"`。完成并从「继续编辑」复开本稿后，从两张主卡片内的 `img.currentSrc` 回读图片资源并对照原图构图。
+先 `scrollIntoView` 等待滚动到位，再点击 `.cover-Jg3T4p >> nth=0` 打开双封面编辑器；切换「设置竖封面」/「设置横封面」tab 后如弹出「使用此素材作为封面？」点「直接编辑」。弹窗内优先对 `.upload-tips-KomyJM`（或「上传封面」/「点击上传文件或拖拽文件到这里」）挂 `waitForFileChooser` 并用 `mouse.click` 点击避开弹窗指针拦截。点底部「完成」并从「继续编辑」复开本稿后，从两张主卡片内的 `img.currentSrc` 回读图片资源并对照原图构图。
 
 ### 微信视频号：按成片方向核对卡片
-先等视频上传和转码完成，在主页面「封面预览」按名称和比例找到可见卡片（竖屏 1 个「个人主页和分享卡片(3:4)」；横屏 2 个「个人主页卡片 3:4」和「分享卡片 4:3」），点击对应卡片的「编辑」（如 `.vertical-img-wrap .edit-btn` / `.horizon-img-wrap .edit-btn`）。横屏设完第一张卡片后打开第二张时可能浮出「使用此素材作为封面？」提示，**点击「直接编辑」**真正进入编辑弹窗，在弹窗上传对应来图、核对构图后点击「确认」，再回到主卡片核对回显图片。
+先等视频上传和转码完成，在主页面「封面预览」按名称和比例找到可见卡片（竖屏 1 个「个人主页和分享卡片(3:4)」；横屏 2 个「个人主页卡片 3:4」和「分享卡片 4:3」），点击对应卡片的「编辑」（如 `.vertical-img-wrap .edit-btn` / `.horizon-img-wrap .edit-btn`）。横屏设完第一张卡片后打开第二张时可能浮出「使用此素材作为封面？」提示，**点击「直接编辑」**真正进入编辑弹窗，在弹窗对 `.single-cover-uploader-wrap input[type="file"]` 选图，核对构图后**严格点击可见 `.weui-desktop-dialog__ft` 内文本等于 `"确认"` 的橙色主按钮**（切勿模糊匹配隐藏的「确定」），再回到主卡片核对回显图片。

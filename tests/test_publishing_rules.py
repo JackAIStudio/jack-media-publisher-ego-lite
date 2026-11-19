@@ -1,5 +1,8 @@
-"""保护发布文档间的核心声明、分区、封面槽、小红书横竖屏偏好及链接完整性规则。"""
+"""保护发布文档间的核心声明、分区、封面槽、小红书横竖屏偏好、链接完整性及快速通道脚本硬边界规则。"""
+import json
 import re
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -78,6 +81,78 @@ class PublishingRules(unittest.TestCase):
                             for h in re.findall(r'^#+\s+(.+)$', target_text, re.M)
                         ]
                         self.assertIn(anchor.lower(), headings, f'Missing anchor #{anchor} in {resolved.name}')
+
+    def test_fast_path_scripts_syntax_and_hard_boundaries(self):
+        scripts = sorted((ROOT / 'scripts').rglob('*.mjs'))
+        self.assertGreaterEqual(len(scripts), 6, 'Expected modular fast-path scripts under scripts/')
+        forbidden_publish_click = re.compile(
+            r'''(?:click|press)\s*\([^)]*(?:发布笔记|立即投稿|text="发布"|text="发表"|has-text\("发布"\)|has-text\("发表"\)|定时发布|安排时间)'''
+        )
+        for script in scripts:
+            with self.subTest(script=str(script.relative_to(ROOT))):
+                check = subprocess.run(
+                    ['node', '--check', str(script)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(check.returncode, 0, f'Syntax error in {script}: {check.stderr}')
+                source = script.read_text(encoding='utf-8')
+                self.assertIsNone(
+                    forbidden_publish_click.search(source),
+                    f'Hard boundary violation: script must never click final publish or schedule buttons ({script.name})',
+                )
+
+    def test_validate_module_and_dry_run(self):
+        validate_url = (ROOT / 'scripts/lib/validate.mjs').as_uri()
+        probe_js = f"""
+import {{ calcXhsTitleWeight, calcDouyinTitleLength, validateAndNormalizeJob }} from {json.dumps(validate_url)};
+const out = {{
+  agentW: calcXhsTitleWeight("Agent"),
+  sampleW: calcXhsTitleWeight("给Agent装个Skill，后台控制浏览器"),
+  realW: calcXhsTitleWeight("A处你完蛋了，Gpt和Gemini要把你打趴下来"),
+  dySample: calcDouyinTitleLength("给Agent装个Skill，后台控制浏览器"),
+  dyEmoji: calcDouyinTitleLength("🔥"),
+}};
+console.log(JSON.stringify(out));
+"""
+        proc = subprocess.run(['node', '--input-type=module', '-e', probe_js], capture_output=True, text=True, check=True)
+        res = json.loads(proc.stdout)
+        self.assertEqual(res['agentW'], 3)
+        self.assertEqual(res['sampleW'], 16)
+        self.assertEqual(res['realW'], 19)
+        self.assertEqual(res['dySample'], 21)
+        self.assertEqual(res['dyEmoji'], 2)
+
+        # Test dry-run with bundled fixtures (clip.mp4 + cover-3x4.png)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            job_path = Path(tmpdir) / 'job.json'
+            job_path.write_text(
+                json.dumps(
+                    {
+                        'title': 'Ego 快速通道预检',
+                        'video': str(ROOT / 'fixtures/clip.mp4'),
+                        'covers': {'3x4': str(ROOT / 'fixtures/cover-3x4.png')},
+                        'topics': ['剪辑教程', '效率工具'],
+                        'original': True,
+                        'aiGenerated': False,
+                        'bilibili': {'category': '科技数码'},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding='utf-8',
+            )
+            dry = subprocess.run(
+                ['node', str(ROOT / 'scripts/run.mjs'), '--job', str(job_path), '--dry-run'],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(dry.returncode, 0, f'Dry-run failed: {dry.stderr}\n{dry.stdout}')
+            payload = json.loads(dry.stdout)
+            self.assertTrue(payload['dryRun'])
+            self.assertEqual(payload['normalized']['xhs']['coverRatio'], '3x4')
+            self.assertEqual(payload['normalized']['wechat']['location'], '不显示位置')
 
 
 if __name__ == '__main__':

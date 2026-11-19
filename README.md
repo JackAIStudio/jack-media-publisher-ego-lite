@@ -52,9 +52,13 @@ git -C "$HOME/.agents/skills/jack-media-publisher-ego-lab" pull --ff-only
 | B 站 | 点「存草稿」，从「稿件管理 → 草稿」复开目标条目。 |
 | 微信视频号 | 点「保存草稿」，在另一个标签页从草稿箱复核。原编辑页最后设置视频标注，留给作者发表。 |
 
+## 快速通道脚本与 Agent 兜底
+
+仓库自带参数化快速通道脚本 [`scripts/run.mjs`](<scripts/run.mjs>)（`--dry-run` / `--stage pass1|pass2|finish|offline`），以「两段式流水线（先批量填稿存草稿 → 再统一复开总检）」减少模型推理轮次与冗余截屏。脚本仅是加速通道：四平台彼此隔离执行，任何平台如因前端改版或异常弹窗返回 `needs_agent_fallback`，现场标签页会原样保留并交由助手接管排查补齐，绝不会阻断其余平台。
+
 ## 本机规则自检
 
-改动平台规则或参考文档后，可在仓库根目录运行规则回归测试：
+改动平台规则、快速通道脚本或参考文档后，可在仓库根目录运行规则回归测试：
 
 ```sh
 python3 -IB -m unittest discover -s tests -p 'test_*.py' -v

@@ -17,6 +17,48 @@ disable-model-invocation: true
   - 平台暗坑与故障退路：[gotchas.md](<references/gotchas.md>)
   - 上传、字段、封面与复开验收：[verification.md](<references/verification.md>)
   - 标题加权计数：[title-limits.md](<references/title-limits.md>) · B 站分区：[bilibili-categories.md](<references/bilibili-categories.md>)
+  - 快速通道脚本入口：[run.mjs](<scripts/run.mjs>)
+
+## 执行思维：快速通道（Fast Path）+ Agent 自主兜底
+
+本技能提供参数化脚本 [run.mjs](<scripts/run.mjs>) 作为**两段式快速通道**，但**脚本只是加速通道，不是刚性边界**——任何平台前端都可能随时改版，脚本失败绝不意味着任务做不了，而是进入 Agent 自主诊断与兜底阶段：
+
+1. **优先走两段式快速通道（少轮次、低上下文、0 冗余截图）**：
+   - **Pass 1（批量填稿存稿）**：先一口气跑完所有目标平台的「验登录 → 并行投递视频 → 静音 → 填标题/话题/声明/封面 → 存草稿」，利用后序平台的时间自然覆盖微信视频号后台转码与各平台草稿落盘延迟；
+   - **Pass 2（统一复开总检）**：四平台统一从草稿入口复开，一次性打包回读字段、话题实体、声明与封面真实像素，视频号在原编辑页补完「视频标注」，四页恢复「暂停 + 取消静音」；
+   - **Finish（独立交接）**：全绿灯后，单独一步 `finish({ keep })` 只留最终编辑页交接。
+   - **正常流程不截全屏图、不打印整页 snapshot**，只靠结构化 JSON 回读确认；仅在回读异常或页面改版排障时按需观察，避免上下文膨胀拖慢推理。
+2. **失败隔离与按步接管（Graceful Fallback）**：
+   - 脚本内四平台彼此隔离执行，任何一步因前端改版、未知弹窗或验收红灯失败时，会**保留该平台现场标签页**并返回精简 JSON（`status: "needs_agent_fallback"`、`failedStep`、`reason`、`diagnostics`），其余绿灯平台不受影响；
+   - 收到 `needs_agent_fallback` 后，Agent **不要从头重跑全套**，而是直接切入该平台对应的 `spaceId` 和 `pageLabel`，用 `page.snapshot()` / `page.evaluate()` 观察真实 DOM、自主想办法完成当前失败步骤并按 [verification.md](<references/verification.md>) 复开验收；
+   - 收到 `needs_user_handoff`（如未登录、抖音已有其他未发布「继续编辑」草稿防覆盖、小红书本地草稿满 100 条）时，立即停住该平台并向 Jack 汇报或交接；
+   - 事后如确认为平台长期改版，可顺手将新选择器回写到 `scripts/lib/` 与 `references/selectors.md`，让快速通道越用越稳。
+
+### 快速通道标准命令
+
+先在 `local/job-<date>-<slug>.json` 写入本次已对齐的任务参数（含 `title`、`video`、`covers`、`topics`、`original`、`aiGenerated`、`bilibili.category`、`platforms`），随后按阶段执行：
+
+```bash
+# 0. 零成本预检（校验标题上限、探测视频旋转后方向与封面真实像素，不启浏览器）
+node /Users/jkw/.agents/skills/jack-media-publisher-ego-lab/scripts/run.mjs \
+  --job /Users/jkw/.agents/skills/jack-media-publisher-ego-lab/local/job-example.json \
+  --dry-run
+
+# 1. Pass 1：开空间 + 验登录 + 并行传视频 + 批量填稿与存草稿（自动回写 spaceId 与 pageLabels）
+node /Users/jkw/.agents/skills/jack-media-publisher-ego-lab/scripts/run.mjs \
+  --job /Users/jkw/.agents/skills/jack-media-publisher-ego-lab/local/job-example.json \
+  --stage pass1
+
+# 2. Pass 2：四平台统一复开总检 + 微信原页设视频标注 + 四页恢复暂停未静音
+node /Users/jkw/.agents/skills/jack-media-publisher-ego-lab/scripts/run.mjs \
+  --job /Users/jkw/.agents/skills/jack-media-publisher-ego-lab/local/job-example.json \
+  --stage pass2
+
+# 3. 写完 local/progress-*.json 且全绿灯后，单独一步留页交接（可用 --platforms 仅重跑单平台）
+node /Users/jkw/.agents/skills/jack-media-publisher-ego-lab/scripts/run.mjs \
+  --job /Users/jkw/.agents/skills/jack-media-publisher-ego-lab/local/job-example.json \
+  --stage finish
+```
 
 ## 硬边界
 
@@ -96,9 +138,9 @@ ffprobe -v error -show_entries format=duration,size,bit_rate:format_tags=title,c
    - 视频号封面先等上传处理完成后，对照主页面实际显示的 1 张共用卡（竖屏）或 2 张独立卡（横屏主页 3:4 + 分享 4:3）逐卡进 `wujie-app` 上传并回读。
 2. 各平台填完后，必须在目标编辑器/主卡片控件内**实读回字段值与绑定图**，对照 [verification.md](<references/verification.md>) 确认无误。
 
-### 4. 存草稿与复开验收
+### 4. 存草稿与复开验收（支持两段式总检）
 
-每个平台一旦处理完视频、填好字段与封面，就按下表**保存草稿，从平台入口复开同一稿，核对后再留页给 Jack 发布**。
+推荐采用**两段式流水线**：先连续完成四平台填稿与存草稿（Pass 1），再利用错峰时间统一按顺序从各平台入口复开同一稿做总检（Pass 2）；若为单平台修补，也可即时复开验收。复开核对标准如下表：
 
 | 平台 | 怎样保存并找到同一稿 | 复开后核对什么，留下哪一页 |
 |---|---|---|

@@ -1,0 +1,446 @@
+import {
+  bringToFront,
+  collectLightDiagnostics,
+  makeFallback,
+  makeHandoff,
+  muteAndPausePage,
+} from "./utils.mjs";
+
+export const XHS_URL = "https://creator.xiaohongshu.com/publish/publish";
+
+/**
+ * 阶段 1a：检查登录态、记录原有草稿数，并注入成片。
+ */
+export async function xhsInspectAndInject(page, job) {
+  await page.waitForSelector("input.upload-input", { state: "attached", timeout: 15000 }).catch(() => {});
+  const info = await page.evaluate(() => {
+    const text = document.body?.innerText || "";
+    const user =
+      document.querySelector(".account-name, .user-name, .name-box, .header-user-name")?.textContent?.trim() || "";
+    const draftHint = text.match(/草稿箱[^\n]{0,12}/)?.[0] || "";
+    const draftCount = Number(draftHint.match(/\((\d+)\)/)?.[1] ?? -1);
+    const hasUploadInput = !!document.querySelector("input.upload-input");
+    return { url: location.href, user, draftHint, draftCount, hasUploadInput };
+  });
+
+  if (!info.url.includes("creator.xiaohongshu.com/publish") || !info.hasUploadInput) {
+    return makeHandoff("login", "小红书未登录或未停留在发布页，请先登录或接管。", { info });
+  }
+  if (info.draftCount >= 100) {
+    return makeHandoff("draft_quota", "小红书本地草稿箱已达 100 条容量上限，请先由作者决定清理哪些旧稿。", { info });
+  }
+
+  await page.setInputFiles("input.upload-input", [job.video.path]);
+  return { status: "injected", user: info.user, draftHintBefore: info.draftHint };
+}
+
+/**
+ * 阶段 1b：填标题、选真实话题实体、设原创与内容类型声明、传匹配方向封面、点「暂存离开」。
+ */
+export async function xhsFillAndSave(page, job) {
+  let step = "wait_editor";
+  try {
+    await bringToFront(page);
+    await page.waitForSelector('input.d-text[placeholder*="填写标题"]', { state: "visible", timeout: 25000 });
+    await muteAndPausePage(page);
+
+    // 1. 标题
+    step = "title";
+    await page.fill('input.d-text[placeholder*="填写标题"]', job.xhs.title);
+    await page.waitForTimeout(250);
+
+    // 2. 正文聚焦（避开底部悬浮 <xhs-publish-btn>）+ 逐个选真实话题实体
+    step = "topics";
+    const edTop = await page.evaluate(() => {
+      const ed = document.querySelector("div.tiptap.ProseMirror");
+      if (!ed) return null;
+      ed.scrollIntoView({ block: "center" });
+      ed.focus();
+      const r = ed.getBoundingClientRect();
+      return { x: Math.round(r.left + 40), y: Math.round(r.top + 20) };
+    });
+    if (!edTop) throw new Error("未找到正文编辑器 div.tiptap.ProseMirror");
+    await page.waitForTimeout(200);
+    await page.mouse.click(edTop.x, edTop.y, { label: "focus XHS body top" });
+    await page.keyboard.press("ControlOrMeta+a");
+    await page.keyboard.press("Backspace");
+    await page.waitForTimeout(200);
+
+    const topicLogs = [];
+    for (const word of job.xhs.topics) {
+      await page.evaluate(() => {
+        const ed = document.querySelector("div.tiptap.ProseMirror");
+        if (!ed) return;
+        ed.focus();
+        const sel = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(ed);
+        range.collapse(false);
+        sel.removeAllRanges();
+        sel.addRange(range);
+        document.querySelector("button.contentBtn.topic-btn")?.click();
+      });
+      await page.waitForTimeout(280);
+      await page.keyboard.type(word, { delay: 45 });
+
+      await page
+        .waitForFunction(
+          (w) => {
+            const items = [...document.querySelectorAll(".tippy-box .item")];
+            return items.some((el) => (el.innerText || "").toLowerCase().includes(w.toLowerCase()));
+          },
+          word,
+          { timeout: 6000 }
+        )
+        .catch(() => {});
+      await page.waitForTimeout(400);
+
+      const pick = await page.evaluate((w) => {
+        const items = [...document.querySelectorAll(".tippy-box .item")].filter(
+          (el) => el.getBoundingClientRect().height > 10
+        );
+        const parsed = items
+          .map((el) => ({
+            el,
+            name: (el.innerText || "").split("\n")[0].trim().replace(/^#/, ""),
+          }))
+          .filter((x) => x.name);
+        const chosen =
+          parsed.find((x) => x.name.toLowerCase() === w.toLowerCase()) ||
+          parsed.find((x) => x.name.toLowerCase().startsWith(w.toLowerCase())) ||
+          parsed.find((x) => x.name.toLowerCase().includes(w.toLowerCase()));
+        if (chosen) chosen.el.click();
+        return { word: w, chosen: chosen?.name || null };
+      }, word);
+      topicLogs.push(pick);
+      await page.waitForTimeout(350);
+    }
+
+    // 3. 原创声明（只操作 .original-wrapper .d-switch，绝不误碰定时发布）
+    step = "original_declaration";
+    const origChecked = await page.evaluate(
+      () => !!document.querySelector('.original-wrapper input[type="checkbox"]')?.checked
+    );
+    if (job.original && !origChecked) {
+      await page.evaluate(() =>
+        document.querySelector(".original-wrapper .d-switch")?.scrollIntoView({ block: "center" })
+      );
+      await page.waitForTimeout(200);
+      await page.click(".original-wrapper .d-switch", { label: "enable XHS original" });
+      await page.waitForTimeout(600);
+      const hasModal = await page.evaluate(() => !!document.querySelector(".originalContainer"));
+      if (hasModal) {
+        await page.click(".originalContainer .d-checkbox-simulator", { label: "agree XHS original" });
+        await page.waitForTimeout(250);
+        await page.evaluate(() => {
+          const btn = [...document.querySelectorAll(".originalContainer button, button")].find(
+            (b) => (b.innerText || "").trim() === "声明原创" && b.getBoundingClientRect().height > 0
+          );
+          if (btn) btn.click();
+        });
+        await page.waitForTimeout(500);
+      }
+    }
+
+    // 4. 内容类型声明（含 AI 生成内容选「笔记含AI合成内容」；否则留空不选）
+    step = "ai_declaration";
+    if (job.aiGenerated) {
+      await page.evaluate(() => {
+        const el = [...document.querySelectorAll(".d-select")].find((n) =>
+          (n.innerText || "").includes("内容类型声明")
+        );
+        el?.scrollIntoView({ block: "center" });
+      });
+      await page.waitForTimeout(250);
+      await page.click('text="添加内容类型声明"', { label: "open XHS content type declaration" }).catch(async () => {
+        await page.evaluate(() => {
+          const el = [...document.querySelectorAll(".d-select")].find((n) =>
+            (n.innerText || "").includes("内容类型声明")
+          );
+          el?.click();
+        });
+      });
+      await page.waitForTimeout(600);
+      const aiPicked = await page.evaluate(() => {
+        const opt = [...document.querySelectorAll("div, li, span")].find(
+          (el) =>
+            (el.innerText || "").trim() === "笔记含AI合成内容" &&
+            el.getBoundingClientRect().height > 10 &&
+            el.getBoundingClientRect().height < 70
+        );
+        if (opt) {
+          opt.click();
+          return true;
+        }
+        return false;
+      });
+      if (!aiPicked) throw new Error("未在小红书内容类型声明下拉中找到「笔记含AI合成内容」");
+      await page.waitForTimeout(450);
+    }
+
+    // 5. 封面（竖屏默认 3:4；横屏 4:3 上传后必须切到左侧「裁剪 -> 4:3」）
+    step = "cover";
+    let coverResult = "skipped_no_cover_provided";
+    if (job.xhs.coverPath) {
+      await page.waitForSelector(".default--ai-cover-layout", { state: "visible", timeout: 20000 });
+      await page.evaluate(() =>
+        document.querySelector(".default--ai-cover-layout")?.scrollIntoView({ block: "center" })
+      );
+      await page.waitForTimeout(250);
+      await page.hover(".default--ai-cover-layout", { label: "hover XHS cover" });
+      await page.waitForTimeout(450);
+      const hasEntry = await page.evaluate(() => !!document.querySelector(".cover-edit-entry"));
+      if (hasEntry) {
+        await page.click(".cover-edit-entry", { label: "open XHS cover editor" });
+      } else {
+        await page.click(".default--ai-cover-layout", { label: "open XHS cover editor" });
+      }
+      await page.waitForTimeout(1200);
+
+      // 若新版封面编辑器提示视频加载问题，自动点「回退到旧版」
+      const fellBack = await page.evaluate(() => {
+        const fb = [...document.querySelectorAll("a, button, span, div")].find(
+          (el) => (el.innerText || "").trim().includes("回退到旧版") && el.getBoundingClientRect().height > 0
+        );
+        if (fb) {
+          fb.click();
+          return true;
+        }
+        return false;
+      });
+      if (fellBack) await page.waitForTimeout(900);
+
+      const imgSel = await page.evaluate(() => {
+        const inp =
+          document.querySelector('input[aria-label="上传封面图片"]') ||
+          document.querySelector('input[type="file"][accept*="image"]');
+        if (!inp) return null;
+        return inp.getAttribute("aria-label")
+          ? `input[aria-label="${inp.getAttribute("aria-label")}"]`
+          : 'input[type="file"][accept*="image"]';
+      });
+      if (!imgSel) throw new Error("未在小红书封面弹窗中找到图片上传 input");
+
+      await page.setInputFiles(imgSel, [job.xhs.coverPath]);
+      await page.waitForTimeout(2200);
+
+      // 横屏 4:3 时必须切到裁剪 -> 4:3（弹窗默认 3:4）
+      if (job.xhs.coverRatio === "4x3") {
+        const cropClicked = await page.evaluate(() => {
+          const modal = document.querySelector(".main-cover-editor-modal, .d-modal");
+          if (!modal) return "no_modal";
+          const cropTab = [...modal.querySelectorAll("div, span, button")].find(
+            (el) => (el.innerText || "").trim() === "裁剪" && el.getBoundingClientRect().height > 0
+          );
+          if (cropTab) cropTab.click();
+          return cropTab ? "clicked_crop" : "no_crop_tab";
+        });
+        await page.waitForTimeout(500);
+        const ratio43Clicked = await page.evaluate(() => {
+          const modal = document.querySelector(".main-cover-editor-modal, .d-modal");
+          if (!modal) return false;
+          const r43 = [...modal.querySelectorAll("div, span, button")].find(
+            (el) => (el.innerText || "").trim() === "4:3" && el.getBoundingClientRect().height > 0
+          );
+          if (r43) {
+            r43.click();
+            return true;
+          }
+          return false;
+        });
+        await page.waitForTimeout(500);
+        if (!ratio43Clicked) {
+          throw new Error(`小红书横屏 4:3 封面未能切换到 4:3 裁剪框（cropTab=${cropClicked}）`);
+        }
+      }
+
+      const confirmed = await page.evaluate(() => {
+        const modal = document.querySelector(".main-cover-editor-modal, .d-modal");
+        if (!modal) return null;
+        const btns = [...modal.querySelectorAll('button, [role="button"]')].filter(
+          (b) => b.getBoundingClientRect().height > 0
+        );
+        const ok =
+          btns.find((b) => (b.innerText || "").trim() === "确定") ||
+          btns.find((b) => (b.innerText || "").trim() === "完成");
+        if (ok) {
+          ok.click();
+          return ok.innerText.trim();
+        }
+        return null;
+      });
+      if (!confirmed) throw new Error("未找到小红书封面弹窗内的「完成/确定」按钮");
+      await page.waitForTimeout(2200);
+      coverResult = `uploaded_${job.xhs.coverRatio}_confirmed_${confirmed}`;
+    }
+
+    // 6. 等待视频上传结束并点「暂存离开」
+    step = "save_draft";
+    await page
+      .waitForFunction(
+        () => {
+          const t = document.body?.innerText || "";
+          return !t.includes("上传中") && !t.includes("正在上传");
+        },
+        undefined,
+        { timeout: 25000 }
+      )
+      .catch(() => {});
+
+    try {
+      await page.click('text="暂存离开"', { label: "save XHS draft", timeout: 5000 });
+    } catch {
+      const snap = await page.snapshot({ scope: "full_page" });
+      const m = snap.match(/\[ref=(\d+)[^\]]*\]\n\s+text "暂存离开"/);
+      if (!m) throw new Error("未找到小红书「暂存离开」按钮");
+      await page.click(`@${m[1]}`, { label: "save XHS draft by ref" });
+    }
+    await page.waitForTimeout(3000);
+
+    const afterSave = await page.evaluate(() => {
+      const t = (document.body?.innerText || "").replace(/\s+/g, " ");
+      return {
+        url: location.href,
+        hasSaved: t.includes("保存成功") || t.includes("草稿箱"),
+        draftHint: t.match(/草稿箱[^\s]{0,12}/)?.[0] || "",
+      };
+    });
+    if (!afterSave.hasSaved) {
+      return makeFallback("save_draft", "点击暂存离开后未检测到「保存成功」或草稿箱回执", await collectLightDiagnostics(page), {
+        topicLogs,
+        coverResult,
+        afterSave,
+      });
+    }
+
+    return { status: "ok", topicLogs, coverResult, afterSave };
+  } catch (err) {
+    return makeFallback(step, err, await collectLightDiagnostics(page));
+  }
+}
+
+/**
+ * 阶段 2：从小红书草稿箱复开同一条稿，回读所有字段与封面评估，留页交接。
+ */
+export async function xhsReopenAndVerify(page, job) {
+  let step = "open_draft_box";
+  try {
+    await bringToFront(page);
+    const titlePrefix = job.xhs.title.slice(0, 10);
+
+    const drawerHasItem = await page.evaluate(
+      (prefix) => (document.body?.innerText || "").includes(prefix),
+      titlePrefix
+    );
+    if (!drawerHasItem) {
+      const draftTrigger = await page.evaluate(() => {
+        const el = [...document.querySelectorAll("div, span, button, a")].find(
+          (n) =>
+            /^草稿箱/.test((n.innerText || "").trim()) &&
+            n.getBoundingClientRect().height > 0 &&
+            n.getBoundingClientRect().height < 60
+        );
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+      });
+      if (!draftTrigger) throw new Error("未在小红书页面找到「草稿箱」入口");
+      await page.mouse.click(draftTrigger.x, draftTrigger.y, { label: "open XHS draft box" });
+      await page.waitForTimeout(1500);
+    }
+
+    step = "reopen_item";
+    const reopen = await page.evaluate((prefix) => {
+      const rows = [...document.querySelectorAll('[class*="draft"], li, .item, .card, div')];
+      const matches = rows
+        .filter((r) => {
+          const t = (r.innerText || "").replace(/\s+/g, " ");
+          return t.includes(prefix) && t.length < 320;
+        })
+        .sort((a, b) => (a.innerText?.length || 0) - (b.innerText?.length || 0));
+      for (const r of matches) {
+        const btn = [...r.querySelectorAll("button, a, span, div")].find(
+          (el) => (el.textContent || "").trim() === "编辑"
+        );
+        if (btn) {
+          btn.click();
+          return { ok: true, rowText: (r.innerText || "").replace(/\s+/g, " ") };
+        }
+      }
+      return { ok: false };
+    }, titlePrefix);
+    if (!reopen.ok) throw new Error(`小红书草稿箱未找到含「${titlePrefix}」的条目`);
+    await page.waitForTimeout(3500);
+    await muteAndPausePage(page);
+
+    step = "verify";
+    const verified = await page.evaluate(() => {
+      const title = document.querySelector('input.d-text[placeholder*="填写标题"]')?.value || "";
+      const count = (document.body?.innerText || "").match(/\d+\s*\/\s*20/)?.[0] || "";
+      const ed = document.querySelector("div.tiptap.ProseMirror");
+      const topics = [...(ed?.querySelectorAll("a.tiptap-topic") || [])].map((a) => {
+        try {
+          return JSON.parse(a.getAttribute("data-topic") || "{}").name || a.textContent?.trim();
+        } catch {
+          return a.textContent?.trim();
+        }
+      });
+      const switches = [...document.querySelectorAll(".custom-switch-card")].map((el) => ({
+        text: (el.innerText || "").replace(/\s+/g, " ").slice(0, 20),
+        checked: !!el.querySelector('input[type="checkbox"]')?.checked,
+      }));
+      const decl = [...document.querySelectorAll(".d-select")].map((el) =>
+        (el.innerText || "").replace(/\s+/g, " ").slice(0, 30)
+      );
+      const coverImgs = [...document.querySelectorAll('.default--ai-cover-layout img, .cover img, [class*="preview"] img')]
+        .filter((i) => i.naturalWidth >= 100)
+        .map((img) => ({
+          nw: img.naturalWidth,
+          nh: img.naturalHeight,
+          ratio: Number((img.naturalWidth / img.naturalHeight).toFixed(3)),
+          host: (() => {
+            try {
+              return new URL(img.currentSrc || img.src).host;
+            } catch {
+              return "";
+            }
+          })(),
+        }));
+      const txt = (document.body?.innerText || "").replace(/\s+/g, " ");
+      return {
+        url: location.href,
+        title,
+        count,
+        topics,
+        switches,
+        decl,
+        hasEvalPass: txt.includes("封面效果评估通过"),
+        hasHD: txt.includes("高清视频"),
+        coverImgs: coverImgs.slice(0, 4),
+      };
+    });
+
+    const issues = [];
+    if (verified.title !== job.xhs.title) issues.push(`标题不一致: "${verified.title}"`);
+    if (verified.topics.length < job.xhs.topics.length) {
+      issues.push(`话题实体数量不足: 实得 ${verified.topics.length}/${job.xhs.topics.length}`);
+    }
+    const sched = verified.switches.find((s) => s.text.includes("定时"));
+    if (sched?.checked) issues.push("定时发布开关被意外打开，必须关闭");
+    const origSw = verified.switches.find((s) => s.text.includes("原创"));
+    if (job.original && !origSw?.checked) issues.push("原创声明未勾选");
+    const contentDecl = verified.decl[0] || "";
+    if (job.aiGenerated && !contentDecl.includes("AI")) issues.push(`AI 声明未生效: "${contentDecl}"`);
+    if (!job.aiGenerated && contentDecl.includes("AI")) issues.push(`误选了 AI 声明: "${contentDecl}"`);
+
+    return {
+      status: issues.length ? "needs_agent_fallback" : "ok",
+      failedStep: issues.length ? "verify" : null,
+      issues,
+      reopen,
+      verified,
+    };
+  } catch (err) {
+    return makeFallback(step, err, await collectLightDiagnostics(page));
+  }
+}
