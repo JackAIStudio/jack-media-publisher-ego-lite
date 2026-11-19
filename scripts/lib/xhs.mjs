@@ -30,8 +30,9 @@ export async function xhsInspectAndInject(page, job) {
     return makeHandoff("draft_quota", "小红书本地草稿箱已达 100 条容量上限，请先由作者决定清理哪些旧稿。", { info });
   }
 
-  await page.setInputFiles("input.upload-input", [job.video.path]);
-  return { status: "injected", user: info.user, draftHintBefore: info.draftHint };
+  const uploadPath = job.xhs.videoPath || job.video.path;
+  await page.setInputFiles("input.upload-input", [uploadPath]);
+  return { status: "injected", user: info.user, draftHintBefore: info.draftHint, videoPath: uploadPath };
 }
 
 /**
@@ -326,7 +327,8 @@ export async function xhsReopenAndVerify(page, job) {
   let step = "open_draft_box";
   try {
     await bringToFront(page);
-    const titlePrefix = job.xhs.title.slice(0, 10);
+    const fullTitle = job.xhs.title;
+    const titlePrefix = fullTitle.slice(0, 10);
 
     const drawerHasItem = await page.evaluate(
       (prefix) => (document.body?.innerText || "").includes(prefix),
@@ -350,26 +352,34 @@ export async function xhsReopenAndVerify(page, job) {
     }
 
     step = "reopen_item";
-    const reopen = await page.evaluate((prefix) => {
-      const rows = [...document.querySelectorAll('[class*="draft"], li, .item, .card, div')];
-      const matches = rows
-        .filter((r) => {
-          const t = (r.innerText || "").replace(/\s+/g, " ");
-          return t.includes(prefix) && t.length < 320;
-        })
-        .sort((a, b) => (a.innerText?.length || 0) - (b.innerText?.length || 0));
-      for (const r of matches) {
-        const btn = [...r.querySelectorAll("button, a, span, div")].find(
-          (el) => (el.textContent || "").trim() === "编辑"
-        );
-        if (btn) {
-          btn.click();
-          return { ok: true, rowText: (r.innerText || "").replace(/\s+/g, " ") };
+    const reopen = await page.evaluate(
+      ({ full, prefix }) => {
+        const rows = [...document.querySelectorAll('[class*="draft"], li, .item, .card, div')];
+        const parseMatches = (needle) =>
+          rows
+            .map((r) => {
+              const t = (r.innerText || "").replace(/\s+/g, " ");
+              const tm = t.match(/保存于(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/)?.[1] || "";
+              const btn = [...r.querySelectorAll("button, a, span, div")].find(
+                (el) => (el.textContent || "").trim() === "编辑"
+              );
+              return { r, t, tm, btn, len: t.length };
+            })
+            .filter((x) => x.t.includes(needle) && x.btn && x.len < 320)
+            .sort((a, b) => b.tm.localeCompare(a.tm) || a.len - b.len);
+
+        const exact = parseMatches(full);
+        const matches = exact.length ? exact : parseMatches(prefix);
+        const top = matches[0];
+        if (top) {
+          top.btn.click();
+          return { ok: true, matchedBy: exact.length ? "fullTitle" : "prefix", savedAt: top.tm, rowText: top.t };
         }
-      }
-      return { ok: false };
-    }, titlePrefix);
-    if (!reopen.ok) throw new Error(`小红书草稿箱未找到含「${titlePrefix}」的条目`);
+        return { ok: false };
+      },
+      { full: fullTitle, prefix: titlePrefix }
+    );
+    if (!reopen.ok) throw new Error(`小红书草稿箱未找到含「${fullTitle}」的条目`);
     await page.waitForTimeout(3500);
     await muteAndPausePage(page);
 
@@ -392,9 +402,10 @@ export async function xhsReopenAndVerify(page, job) {
       const decl = [...document.querySelectorAll(".d-select")].map((el) =>
         (el.innerText || "").replace(/\s+/g, " ").slice(0, 30)
       );
-      const coverImgs = [...document.querySelectorAll('.default--ai-cover-layout img, .cover img, [class*="preview"] img')]
-        .filter((i) => i.naturalWidth >= 100)
+      const coverImgs = [...document.querySelectorAll('img.cover, .default--ai-cover-layout img, [class*="preview"] img')]
+        .filter((i) => i.naturalWidth >= 400 || ((i.className || "").toString().includes("cover") && i.naturalWidth >= 200))
         .map((img) => ({
+          cls: (img.className || "").toString().slice(0, 30),
           nw: img.naturalWidth,
           nh: img.naturalHeight,
           ratio: Number((img.naturalWidth / img.naturalHeight).toFixed(3)),
@@ -416,11 +427,13 @@ export async function xhsReopenAndVerify(page, job) {
         decl,
         hasEvalPass: txt.includes("封面效果评估通过"),
         hasHD: txt.includes("高清视频"),
+        stillUploading: txt.includes("上传中") || txt.includes("正在上传"),
         coverImgs: coverImgs.slice(0, 4),
       };
     });
 
     const issues = [];
+    if (verified.stillUploading) issues.push("复开后视频仍处于上传中状态");
     if (verified.title !== job.xhs.title) issues.push(`标题不一致: "${verified.title}"`);
     if (verified.topics.length < job.xhs.topics.length) {
       issues.push(`话题实体数量不足: 实得 ${verified.topics.length}/${job.xhs.topics.length}`);
@@ -432,6 +445,16 @@ export async function xhsReopenAndVerify(page, job) {
     const contentDecl = verified.decl[0] || "";
     if (job.aiGenerated && !contentDecl.includes("AI")) issues.push(`AI 声明未生效: "${contentDecl}"`);
     if (!job.aiGenerated && contentDecl.includes("AI")) issues.push(`误选了 AI 声明: "${contentDecl}"`);
+    if (job.xhs.coverPath) {
+      const mainCover = verified.coverImgs.find((c) => c.nw >= 400) || verified.coverImgs[0];
+      if (mainCover) {
+        if (job.xhs.coverRatio === "4x3" && mainCover.ratio < 1.15) {
+          issues.push(`小红书 4:3 横封面比例异常 (ratio=${mainCover.ratio})，疑似仍被裁成 3:4`);
+        } else if (job.xhs.coverRatio === "3x4" && mainCover.ratio > 0.9) {
+          issues.push(`小红书 3:4 竖封面比例异常 (ratio=${mainCover.ratio})`);
+        }
+      }
+    }
 
     return {
       status: issues.length ? "needs_agent_fallback" : "ok",

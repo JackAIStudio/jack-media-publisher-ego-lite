@@ -318,27 +318,37 @@ export async function bilibiliReopenAndVerify(page, job) {
       await page.waitForTimeout(2500);
     }
 
-    const titlePrefix = job.bilibili.title.slice(0, 10);
-    const reopen = await page.evaluate((prefix) => {
-      const rows = [...document.querySelectorAll('.article-card, .draft-item, [class*="card"], [class*="item"], li, div')];
-      const matches = rows
-        .filter((r) => {
-          const t = (r.innerText || "").replace(/\s+/g, " ");
-          return t.includes(prefix) && t.length < 300;
-        })
-        .sort((a, b) => (a.innerText?.length || 0) - (b.innerText?.length || 0));
-      for (const r of matches) {
-        const btn = [...r.querySelectorAll("a, button, span, div")].find(
-          (el) => (el.textContent || "").trim() === "编辑"
-        );
-        if (btn) {
-          btn.click();
-          return { ok: true, rowText: (r.innerText || "").replace(/\s+/g, " ") };
+    const fullTitle = job.bilibili.title;
+    const titlePrefix = fullTitle.slice(0, 10);
+    const reopen = await page.evaluate(
+      ({ full, prefix }) => {
+        const rows = [...document.querySelectorAll('.article-card, .draft-item, [class*="card"], [class*="item"], li, div')];
+        const parseRows = (needle) =>
+          rows
+            .map((r) => {
+              const t = (r.innerText || "").replace(/\s+/g, " ");
+              const btn = [...r.querySelectorAll("a, button, span, div")].find(
+                (el) => (el.textContent || "").trim() === "编辑"
+              );
+              const dm = t.match(/(\d{4})年(\d{2})月(\d{2})日\s+(\d{2}:\d{2}:\d{2})/);
+              const ts = dm ? `${dm[1]}-${dm[2]}-${dm[3]} ${dm[4]}` : "";
+              return { r, t, btn, ts, len: t.length };
+            })
+            .filter((x) => x.t.includes(needle) && x.btn && x.len < 300)
+            .sort((a, b) => b.ts.localeCompare(a.ts) || a.len - b.len);
+
+        const exactMatches = parseRows(full);
+        const matches = exactMatches.length ? exactMatches : parseRows(prefix);
+        const top = matches[0];
+        if (top) {
+          top.btn.click();
+          return { ok: true, matchedBy: exactMatches.length ? "fullTitle" : "prefix", savedAt: top.ts, rowText: top.t };
         }
-      }
-      return { ok: false };
-    }, titlePrefix);
-    if (!reopen.ok) throw new Error(`B 站草稿列表未找到含「${titlePrefix}」的条目`);
+        return { ok: false };
+      },
+      { full: fullTitle, prefix: titlePrefix }
+    );
+    if (!reopen.ok) throw new Error(`B 站草稿列表未找到含「${fullTitle}」的条目`);
     await page.waitForTimeout(3500);
     await muteAndPausePage(page);
 

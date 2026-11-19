@@ -154,6 +154,39 @@ console.log(JSON.stringify(out));
             self.assertEqual(payload['normalized']['xhs']['coverRatio'], '3x4')
             self.assertEqual(payload['normalized']['wechat']['location'], '不显示位置')
 
+            # Test platform-specific douyin.title override when original title exceeds 30 chars (but XHS <= 20)
+            dy_job_path = Path(tmpdir) / 'job_dy_override.json'
+            dy_job_path.write_text(
+                json.dumps(
+                    {
+                        'title': 'Gemini 4 Neon 和 Gpt-6.2 Astra谁更能打？',
+                        'video': str(ROOT / 'fixtures/clip.mp4'),
+                        'covers': {'3x4': str(ROOT / 'fixtures/cover-3x4.png')},
+                        'topics': ['Gemini', 'GPT'],
+                        'original': True,
+                        'aiGenerated': False,
+                        'douyin': {'title': 'Gemini Neon和Gpt-6.2 Astra谁更能打？'},
+                        'xhs': {'videoPath': str(ROOT / 'fixtures/clip.mp4')},
+                        'bilibili': {'category': '人工智能'},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding='utf-8',
+            )
+            dry2 = subprocess.run(
+                ['node', str(ROOT / 'scripts/run.mjs'), '--job', str(dy_job_path), '--dry-run'],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(dry2.returncode, 0, f'Douyin title override dry-run failed: {dry2.stderr}\n{dry2.stdout}')
+            p2 = json.loads(dry2.stdout)['normalized']
+            self.assertEqual(p2['xhs']['title'], 'Gemini 4 Neon 和 Gpt-6.2 Astra谁更能打？')
+            self.assertEqual(p2['douyin']['title'], 'Gemini Neon和Gpt-6.2 Astra谁更能打？')
+            self.assertEqual(p2['titleMetrics']['xhsWeight'], 20)
+            self.assertEqual(p2['titleMetrics']['dyLen'], 34)
+            self.assertTrue(p2['xhs']['videoPath'].endswith('clip.mp4'))
+
 
 if __name__ == '__main__':
     unittest.main()

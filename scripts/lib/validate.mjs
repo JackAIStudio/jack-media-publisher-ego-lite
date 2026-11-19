@@ -37,9 +37,9 @@ export function probeVideo(videoPath) {
       "-v",
       "error",
       "-show_entries",
-      "format=duration,size,bit_rate:format_tags=title,comment",
+      "format=format_name,duration,size,bit_rate:format_tags=title,comment",
       "-show_entries",
-      "stream=codec_type,codec_name,width,height,display_aspect_ratio:stream_side_data=rotation",
+      "stream=codec_type,codec_name,profile,pix_fmt,width,height,display_aspect_ratio:stream_side_data=rotation",
       "-of",
       "json",
       videoPath,
@@ -68,9 +68,12 @@ export function probeVideo(videoPath) {
 
   return {
     path: path.resolve(videoPath),
+    formatName: info.format?.format_name || "",
     durationSec: Number(Number(info.format?.duration || 0).toFixed(2)),
     sizeBytes: Number(info.format?.size || 0),
     videoCodec: vStream.codec_name || "",
+    videoProfile: vStream.profile || "",
+    pixFmt: vStream.pix_fmt || "",
     audioCodec: aStream?.codec_name || "",
     width: displayWidth,
     height: displayHeight,
@@ -148,8 +151,12 @@ export function validateAndNormalizeJob(rawJob, options = {}) {
     const customW = calcXhsTitleWeight(job.xhs.title);
     if (customW > 20) errors.push(`job.xhs.title 加权计数为 ${customW}/20（仍超限）。`);
   }
-  if (platforms.includes("douyin") && dyLen > 30) {
-    errors.push(`抖音标题字数为 ${dyLen}/30（超限）。`);
+  if (platforms.includes("douyin") && dyLen > 30 && !job.douyin?.title) {
+    errors.push(`抖音标题字数为 ${dyLen}/30（超限），请在 job.douyin.title 显式提供协商后的抖音标题。`);
+  }
+  if (platforms.includes("douyin") && job.douyin?.title) {
+    const customDy = calcDouyinTitleLength(job.douyin.title);
+    if (customDy > 30) errors.push(`job.douyin.title 字数为 ${customDy}/30（仍超限）。`);
   }
   if (platforms.includes("bilibili") && biliLen > 80) {
     errors.push(`B 站标题字数为 ${biliLen}/80（超限）。`);
@@ -218,6 +225,27 @@ export function validateAndNormalizeJob(rawJob, options = {}) {
     }
   }
 
+  // 小红书可选独立视频路径（如高码率 8-bit H.264 MP4 兼容版）与 10-bit HEVC .mov 预警
+  let xhsVideoPath = null;
+  if (job.xhs?.videoPath) {
+    if (!fs.existsSync(job.xhs.videoPath)) {
+      errors.push(`小红书指定视频文件不存在: ${job.xhs.videoPath}`);
+    } else {
+      xhsVideoPath = path.resolve(job.xhs.videoPath);
+    }
+  } else if (platforms.includes("xhs") && videoMeta) {
+    const is10BitHevc =
+      videoMeta.videoCodec === "hevc" &&
+      (/10/.test(videoMeta.pixFmt || "") || /Main 10/i.test(videoMeta.videoProfile || ""));
+    const isPcmAudio = /^pcm_/.test(videoMeta.audioCodec || "");
+    const isMov = path.extname(videoMeta.path).toLowerCase() === ".mov";
+    if (isMov && (is10BitHevc || isPcmAudio)) {
+      warnings.push(
+        `成片为 ${videoMeta.videoCodec}(${videoMeta.pixFmt || videoMeta.videoProfile || "10bit"}) / ${videoMeta.audioCodec} .mov，小红书网页端前端解析可能卡死或停在 0%；如遇阻塞可征得作者同意后仅为小红书生成高码率 8-bit H.264 + AAC MP4 并写入 job.xhs.videoPath。`
+      );
+    }
+  }
+
   if (platforms.includes("bilibili") && !job.bilibili?.category) {
     warnings.push("未指定 job.bilibili.category（B 站分区），默认将尝试「人工智能」，建议按成片主旨显式指定。");
   }
@@ -250,11 +278,12 @@ export function validateAndNormalizeJob(rawJob, options = {}) {
     xhs: {
       title: job.xhs?.title || title,
       topics: job.xhs?.topics || baseTopics.slice(0, 5),
+      videoPath: xhsVideoPath,
       coverRatio: xhsCoverRatio,
       coverPath: covers[xhsCoverRatio]?.path || null,
     },
     douyin: {
-      title,
+      title: job.douyin?.title || title,
       topics: job.douyin?.topics || baseTopics.slice(0, 5),
       allowContinueExisting: Boolean(job.douyin?.allowContinueExisting),
       cover3x4: covers["3x4"]?.path || null,

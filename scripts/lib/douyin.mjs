@@ -153,16 +153,27 @@ export async function douyinFillAndSave(page, job) {
       await page.waitForTimeout(450);
     }
 
-    // 4. 双封面（3:4 竖封 + 4:3 横封）
+    // 4. 双封面（3:4 竖封 + 4:3 横封；自动适配竖屏联合双 Tab 弹窗与横屏独立单槽弹窗）
     step = "covers";
     const coverLog = {};
     if (job.douyin.cover3x4 || job.douyin.cover4x3) {
-      await page.evaluate(() => document.querySelector(".cover-Jg3T4p")?.scrollIntoView({ block: "center" }));
-      await page.waitForTimeout(400);
-      await page.click(".cover-Jg3T4p >> nth=0", { label: "open DY dual cover editor" });
-      await page.waitForTimeout(1800);
+      const clickModalDone = async (tag) => {
+        const doneRect = await page.evaluate(() => {
+          const btns = [...document.querySelectorAll("button, div")].filter((el) => (el.textContent || "").trim() === "完成");
+          for (const b of btns) {
+            const r = b.getBoundingClientRect();
+            if (r.width > 40 && r.height > 20 && r.y > 400) {
+              return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+            }
+          }
+          return null;
+        });
+        if (!doneRect) throw new Error(`未找到抖音${tag}封面弹窗底部「完成」按钮`);
+        await page.mouse.click(doneRect.x, doneRect.y, { label: `confirm DY ${tag} cover` });
+        await page.waitForTimeout(3000);
+      };
 
-      const uploadInTab = async (tabName, filePath, tag) => {
+      const uploadInOpenModal = async (tabName, filePath, tag) => {
         if (!filePath) return "not_provided";
         const tabRect = await page.evaluate((name) => {
           const el = [...document.querySelectorAll("div, span, button")].find(
@@ -240,22 +251,68 @@ export async function douyinFillAndSave(page, job) {
         return "dropzone";
       };
 
-      coverLog.v3x4 = await uploadInTab("设置竖封面", job.douyin.cover3x4, "3:4");
-      coverLog.h4x3 = await uploadInTab("设置横封面", job.douyin.cover4x3, "4:3");
+      const openCoverSlotCard = async (keyword) => {
+        const rect = await page.evaluate((kw) => {
+          const cards = [...document.querySelectorAll(".coverControl-CjlzqC")];
+          const target =
+            cards.find((c) => (c.innerText || "").includes(kw)) ||
+            document.querySelector(".cover-Jg3T4p");
+          if (!target) return null;
+          target.scrollIntoView({ block: "center" });
+          const r = target.getBoundingClientRect();
+          return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+        }, keyword);
+        if (!rect) throw new Error(`未找到抖音「${keyword}」封面入口卡片`);
+        await page.waitForTimeout(350);
+        await page.mouse.click(rect.x, rect.y, { label: `open DY ${keyword} editor` });
+        await page.waitForTimeout(1800);
+      };
 
-      const doneRect = await page.evaluate(() => {
-        const btns = [...document.querySelectorAll("button, div")].filter((el) => (el.textContent || "").trim() === "完成");
-        for (const b of btns) {
-          const r = b.getBoundingClientRect();
-          if (r.width > 40 && r.height > 20 && r.y > 400) {
-            return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+      // 先从第一张卡（横屏时优先横封面、竖屏时优先竖封面）进入，检测是否为联合双 Tab 弹窗
+      const firstKw = job.video.orientation === "landscape" ? "横封面" : "竖封面";
+      await openCoverSlotCard(firstKw);
+      const hasBothTabs = await page.evaluate(() => {
+        const texts = [...document.querySelectorAll("div, span, button")]
+          .filter((n) => n.children.length === 0 && n.getBoundingClientRect().width > 0)
+          .map((n) => (n.textContent || "").trim());
+        return texts.includes("设置竖封面") && texts.includes("设置横封面");
+      });
+      coverLog.modalMode = hasBothTabs ? "dual_tab" : "independent_slots";
+
+      if (hasBothTabs) {
+        coverLog.v3x4 = await uploadInOpenModal("设置竖封面", job.douyin.cover3x4, "3:4");
+        coverLog.h4x3 = await uploadInOpenModal("设置横封面", job.douyin.cover4x3, "4:3");
+        await clickModalDone("dual");
+      } else {
+        // 横屏独立单槽弹窗：先传已打开的槽位并完成，再独立打开另一槽位传图
+        if (firstKw === "横封面") {
+          if (job.douyin.cover4x3) {
+            coverLog.h4x3 = await uploadInOpenModal("设置横封面", job.douyin.cover4x3, "4:3");
+            await clickModalDone("4:3");
+          } else {
+            await page.keyboard.press("Escape").catch(() => {});
+            await page.waitForTimeout(600);
+          }
+          if (job.douyin.cover3x4) {
+            await openCoverSlotCard("竖封面");
+            coverLog.v3x4 = await uploadInOpenModal("设置竖封面", job.douyin.cover3x4, "3:4");
+            await clickModalDone("3:4");
+          }
+        } else {
+          if (job.douyin.cover3x4) {
+            coverLog.v3x4 = await uploadInOpenModal("设置竖封面", job.douyin.cover3x4, "3:4");
+            await clickModalDone("3:4");
+          } else {
+            await page.keyboard.press("Escape").catch(() => {});
+            await page.waitForTimeout(600);
+          }
+          if (job.douyin.cover4x3) {
+            await openCoverSlotCard("横封面");
+            coverLog.h4x3 = await uploadInOpenModal("设置横封面", job.douyin.cover4x3, "4:3");
+            await clickModalDone("4:3");
           }
         }
-        return null;
-      });
-      if (!doneRect) throw new Error("未找到抖音双封面弹窗底部「完成」按钮");
-      await page.mouse.click(doneRect.x, doneRect.y, { label: "confirm DY dual covers" });
-      await page.waitForTimeout(3200);
+      }
       coverLog.done = true;
     }
 
@@ -367,6 +424,20 @@ export async function douyinReopenAndVerify(page, job) {
     if (!verified.decl.includes(expectedDecl)) issues.push(`自主声明不符: 期望「${expectedDecl}」，实际「${verified.decl}」`);
     if (job.douyin.cover3x4 && job.douyin.cover4x3 && verified.missingCoverWarn) {
       issues.push("页面仍显示「横/竖双封面缺失」");
+    }
+    if (job.douyin.cover4x3) {
+      const hSlot = verified.covers.find((c) => c.slot.includes("横封面"));
+      const hRatio = hSlot?.imgs?.[0]?.ratio || 0;
+      if (hSlot && hRatio < 1.15) {
+        issues.push(`抖音横封面比例异常 (ratio=${hRatio})，疑似未落入 4:3 横图`);
+      }
+    }
+    if (job.douyin.cover3x4) {
+      const vSlot = verified.covers.find((c) => c.slot.includes("竖封面"));
+      const vRatio = vSlot?.imgs?.[0]?.ratio || 0;
+      if (vSlot && (vRatio <= 0 || vRatio > 0.9)) {
+        issues.push(`抖音竖封面比例异常 (ratio=${vRatio})，疑似被横封面覆盖`);
+      }
     }
 
     return {
