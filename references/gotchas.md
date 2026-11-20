@@ -90,3 +90,7 @@ B 站封面编辑器包含 **#editor_4_3（首页推荐）** 和 **#editor_16_9�
 1. **`spaceId` 并非永久固定**：Ego Lite 重启或空间重整后，原有空间的数字 ID 可能变化（实测曾出现进度文件记 `spaceId: 9`，重启后对应空间变为 `id: 4`）。续做时必须用 `listTaskSpaces()` 按 `spaceId` **结合 `name` / `taskId`** 双重核对，并在各平台页面核对标题、片长和保存时间。
 2. **禁止擅自接管 `user` 空间**：按 `ego-browser` 指南，检测到 `ownership: "user"` 的已有同名空间时，须先经用户同意才可 `claimTaskSpace(id)`。
 3. **交接清理页签**：草稿复核常会多开草稿箱列表页、视频预览页等中间页签。交接前核对 `await task.tabs()`，只把每平台最终编辑页的 `label` 传入 `await task.finish({ keep: handoffLabels })`，其余中间页不要保留。
+4. **Ego Lite 内核标签页硬静音（`0.6.3.17` 实测根因与永久规避）**：
+   - **根因**：Ego Lite 在 `createTaskSpace`（初始 `p1`）与 `task.newPage()` 底层会硬编码调用 Chromium 内核的 `chrome::SetTabAudioMuted(wc, true, AUDIO_INDICATOR)`，且在 `finish()` / `handOff()` 移交用户后**不会自动解除**。网页 DOM 层的 `video.muted = false` 无法穿透浏览器进程级标签页静音，导致用户交接后播放任何平台视频都听不到声音。
+   - **永久规避（已内置于 `runner.mjs` / `utils.mjs`）**：开新标签页时，把默认静音的 `p1` 仅作跳板，通过 `spawnUnmutedPage(task, launcherPage)`（加载 `data:text/html,<a id="ego-unmuted-spawn" href="about:blank" target="_blank">open</a>` 并配合 `waitForEvent("popup")` 点击弹出新页）生出**天生不带内核硬静音**的平台标签页，生完立即关闭跳板页。任务执行期仍靠 DOM `muteAndPausePage()` 静音防打扰，交接前 `restorePausedUnmuted()` 还原后用户点播放即可直接出声。
+   - **手工开页 / 历史标签页兜底**：如果某页签（如手工 `task.newPage()` 开的 X 标签页）仍被 Ego Lite 内核静音，播放视频后**直接用鼠标左键单击标签页标题栏上带斜杠的 🔇 小喇叭图标本身**即可立刻解开；**切勿**走右键菜单「将网站静音 → 取消网站静音」（该菜单项对普通 `https://` 网页只改站点权限，不会清除 `AUDIO_INDICATOR` 标签级静音）。

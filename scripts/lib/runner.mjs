@@ -1,6 +1,6 @@
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { muteAndPausePage, restorePausedUnmuted } from "./utils.mjs";
+import { muteAndPausePage, restorePausedUnmuted, spawnUnmutedPage } from "./utils.mjs";
 import { XHS_URL, xhsInspectAndInject, xhsFillAndSave, xhsReopenAndVerify } from "./xhs.mjs";
 import { DOUYIN_URL, douyinInspectAndInject, douyinFillAndSave, douyinReopenAndVerify } from "./douyin.mjs";
 import { BILI_URL, bilibiliInspectAndInject, bilibiliFillAndSave, bilibiliReopenAndVerify } from "./bilibili.mjs";
@@ -133,19 +133,38 @@ async function runPass1(ctx, job) {
   const pageMap = {};
   const pageLabels = { ...(job.pageLabels || {}) };
 
-  // 为每个目标平台分配或复用标签页
+  // 为每个目标平台分配或复用标签页：
+  // 优先用未占用的 p1（或临时页）作跳板，通过 <a target="_blank"> 生出不带 Ego 内核硬静音的标签页，
+  // 全部生完后关闭跳板页；干活期间靠 DOM muteAndPausePage() 保持安静，交接前恢复后用户直接有声播放。
+  const assignedLabels = new Set(Object.values(pageLabels).filter(Boolean));
+  let launcherPage = null;
+  let shouldCloseLauncher = false;
+  const needNewCount = job.platforms.filter(
+    (key) => !(pageLabels[key] && existingPages.some((p) => p.label === pageLabels[key]))
+  ).length;
+  if (needNewCount > 0) {
+    if (!assignedLabels.has("p1") && existingPages.some((p) => p.label === "p1")) {
+      launcherPage = task.page("p1");
+      shouldCloseLauncher = true;
+    } else {
+      launcherPage = await task.newPage();
+      shouldCloseLauncher = true;
+    }
+  }
+
   for (let i = 0; i < job.platforms.length; i++) {
     const key = job.platforms[i];
     if (pageLabels[key] && existingPages.some((p) => p.label === pageLabels[key])) {
       pageMap[key] = task.page(pageLabels[key]);
-    } else if (i === 0 && !Object.values(pageLabels).includes("p1") && existingPages.some((p) => p.label === "p1")) {
-      pageMap[key] = task.page("p1");
-      pageLabels[key] = "p1";
     } else {
-      const np = await task.newPage();
+      const np = await spawnUnmutedPage(task, launcherPage);
       pageMap[key] = np;
       pageLabels[key] = np.label;
     }
+  }
+
+  if (shouldCloseLauncher && launcherPage && !Object.values(pageLabels).includes(launcherPage.label)) {
+    await launcherPage.close().catch(() => {});
   }
 
   // 并行导航到各平台入口

@@ -8,6 +8,31 @@ export async function bringToFront(page) {
   await page.waitForTimeout(200);
 }
 
+const UNMUTED_SPAWN_URL =
+  'data:text/html,<a id="ego-unmuted-spawn" href="about:blank" target="_blank">open</a>';
+
+/**
+ * 通过跳板页上的 <a target="_blank"> 弹出原生未静音标签页，避免 Ego Lite 对
+ * createTaskSpace(p1) / task.newPage() 硬编码浏览器级标签页静音（且 finish 不解除）的问题。
+ * 若偶发弹出失败则自动降级回 task.newPage()，确保不阻断主流程。
+ */
+export async function spawnUnmutedPage(task, launcherPage) {
+  if (!launcherPage) return task.newPage();
+  try {
+    const ready = await launcherPage
+      .evaluate(() => !!document.querySelector("#ego-unmuted-spawn"))
+      .catch(() => false);
+    if (!ready) {
+      await launcherPage.goto(UNMUTED_SPAWN_URL, { timeout: 8000 });
+    }
+    const popupPromise = launcherPage.waitForEvent("popup", { timeout: 6000 });
+    await launcherPage.click("#ego-unmuted-spawn", { label: "spawn unmuted tab" });
+    return await popupPromise;
+  } catch {
+    return task.newPage();
+  }
+}
+
 /**
  * 将页面内所有 <video>/<audio>（含 wujie-app shadowRoot）设为静音并暂停。
  * 遵循规范：不修改 volume。
