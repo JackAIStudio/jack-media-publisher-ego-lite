@@ -5,20 +5,20 @@
 ## 安装
 
 1. 安装并完成 Ego Lite 的首次设置。在终端运行 `ego-browser skill`，确认能看到当前版本的操作指南。处理真实草稿时，先在 Ego Lite 登录准备使用的创作账号。[Ego Lite](https://lite.ego.app/)
-2. 新安装时，在支持 `~/.agents/skills/` 的宿主上将本仓库克隆到以下目录。私有仓库需要具有读取权限的 GitHub 账号。Beta 版沿用手动入口 `/jack-media-publisher-ego-lab`。
+2. 在支持 `~/.agents/skills/` 的宿主上将本仓库克隆到以下目录：
 
    ```sh
    mkdir -p "$HOME/.agents/skills"
    git clone https://github.com/JackAIStudio/jack-media-publisher-ego-lite.git \
-     "$HOME/.agents/skills/jack-media-publisher-ego-lab"
+     "$HOME/.agents/skills/jack-media-publisher-ego-lite"
    ```
 
-3. 在助手的斜杠菜单里选择 `/jack-media-publisher-ego-lab`。平台字段、标题规则、B 站分区、踩坑记录和验收说明都随仓库安装。
+3. 在助手的斜杠菜单里选择 `/jack-media-publisher-ego-lite`。平台字段、标题规则、B 站分区、踩坑记录和验收说明都随仓库安装。
 
 已有本仓库的克隆可用以下命令更新。
 
 ```sh
-git -C "$HOME/.agents/skills/jack-media-publisher-ego-lab" pull --ff-only
+git -C "$HOME/.agents/skills/jack-media-publisher-ego-lite" pull --ff-only
 ```
 
 ## 第一次使用
@@ -26,13 +26,13 @@ git -C "$HOME/.agents/skills/jack-media-publisher-ego-lab" pull --ff-only
 输入下面的命令。助手会把自带的 2 秒样片和 3:4 封面放进本地表单，填写标题与话题并保存。刷新后再次打开草稿，应能读回同一标题、话题、2 秒片长和 240 × 320 的封面尺寸。
 
 ```text
-/jack-media-publisher-ego-lab 离线演练
+/jack-media-publisher-ego-lite 离线演练
 ```
 
 准备真实草稿时，附上本地成片，写明目标平台和原标题。已有封面可以一起提供，有指定话题或明确说明是否含 AI 生成素材也一并给出。例如：
 
 ```text
-/jack-media-publisher-ego-lab 把附上的成片准备成小红书、抖音、B 站和视频号草稿，原标题用「一纸成灯」。使用附上的三张封面，话题根据片子选，成片含 AI 生成画面，保存后复开给我检查。
+/jack-media-publisher-ego-lite 把附上的成片准备成小红书、抖音、B 站和视频号草稿，原标题用「一纸成灯」。使用附上的三张封面，话题根据片子选，成片含 AI 生成画面，保存后复开给我检查。
 ```
 
 助手按成片实际分辨率（含旋转信息）与封面像素自动映射：

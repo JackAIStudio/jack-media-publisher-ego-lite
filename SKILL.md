@@ -1,12 +1,12 @@
 ---
-name: jack-media-publisher-ego-lab
-description: 用 Ego Lite 将指定成片准备为小红书、抖音、B站或微信视频号草稿。逐平台保存，从平台入口复开同一稿，核对字段和封面后留页给 Jack 手动发布。支持离线演练。手动入口 /jack-media-publisher-ego-lab。
+name: jack-media-publisher-ego-lite
+description: 用 Ego Lite 将指定成片准备为小红书、抖音、B站或微信视频号草稿。逐平台保存，从平台入口复开同一稿，核对字段和封面后留页给 Jack 手动发布。支持离线演练。手动入口 /jack-media-publisher-ego-lite。
 disable-model-invocation: true
 ---
 
 # Jack 四平台发布 · Ego Lite
 
-手动输入 `/jack-media-publisher-ego-lab 离线演练`（或单独不附成片调用）时，用自带样片走一遍本地表单演练。给出本地成片或明确要求准备真实草稿时，使用 Ego Lite 准备对应平台草稿；若未点名或刻意排除某平台，**默认四平台（小红书、抖音、B 站、微信视频号）全准备**，绝不因未写明平台而误走离线演练。发布和定时发布均由 Jack 手动操作。
+手动输入 `/jack-media-publisher-ego-lite 离线演练`（或单独不附成片调用）时，用自带样片走一遍本地表单演练。给出本地成片或明确要求准备真实草稿时，使用 Ego Lite 准备对应平台草稿；若未点名或刻意排除某平台，**默认四平台（小红书、抖音、B 站、微信视频号）全准备**，绝不因未写明平台而误走离线演练。发布和定时发布均由 Jack 手动操作。
 
 ## 读取规则
 
@@ -40,23 +40,23 @@ disable-model-invocation: true
 
 ```bash
 # 0. 零成本预检（校验标题上限、探测视频旋转后方向与封面真实像素，不启浏览器）
-node /Users/jkw/.agents/skills/jack-media-publisher-ego-lab/scripts/run.mjs \
-  --job /Users/jkw/.agents/skills/jack-media-publisher-ego-lab/local/job-example.json \
+node ~/.agents/skills/jack-media-publisher-ego-lite/scripts/run.mjs \
+  --job ~/.agents/skills/jack-media-publisher-ego-lite/local/job-example.json \
   --dry-run
 
 # 1. Pass 1：开空间 + 验登录 + 并行传视频 + 批量填稿与存草稿（自动回写 spaceId 与 pageLabels）
-node /Users/jkw/.agents/skills/jack-media-publisher-ego-lab/scripts/run.mjs \
-  --job /Users/jkw/.agents/skills/jack-media-publisher-ego-lab/local/job-example.json \
+node ~/.agents/skills/jack-media-publisher-ego-lite/scripts/run.mjs \
+  --job ~/.agents/skills/jack-media-publisher-ego-lite/local/job-example.json \
   --stage pass1
 
 # 2. Pass 2：四平台统一复开总检 + 微信原页设视频标注 + 四页恢复暂停未静音
-node /Users/jkw/.agents/skills/jack-media-publisher-ego-lab/scripts/run.mjs \
-  --job /Users/jkw/.agents/skills/jack-media-publisher-ego-lab/local/job-example.json \
+node ~/.agents/skills/jack-media-publisher-ego-lite/scripts/run.mjs \
+  --job ~/.agents/skills/jack-media-publisher-ego-lite/local/job-example.json \
   --stage pass2
 
 # 3. 写完 local/progress-*.json 且全绿灯后，单独一步留页交接（可用 --platforms 仅重跑单平台）
-node /Users/jkw/.agents/skills/jack-media-publisher-ego-lab/scripts/run.mjs \
-  --job /Users/jkw/.agents/skills/jack-media-publisher-ego-lab/local/job-example.json \
+node ~/.agents/skills/jack-media-publisher-ego-lite/scripts/run.mjs \
+  --job ~/.agents/skills/jack-media-publisher-ego-lite/local/job-example.json \
   --stage finish
 ```
 
