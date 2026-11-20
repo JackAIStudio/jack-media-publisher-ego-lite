@@ -366,6 +366,47 @@ export async function bilibiliReopenAndVerify(page, job) {
       );
       const quill = document.querySelector("div.ql-editor")?.innerText?.trim() || "";
       const uploadComplete = (document.body?.innerText || "").includes("上传完成");
+      const linkedActivities = [];
+      for (const c of document.querySelectorAll(".label-item-v2-container")) {
+        const cls = (c.className || "").toString();
+        const tagText = c.querySelector(".label-item-v2-content")?.textContent?.trim() || "";
+        const extraText = (c.innerText || "").replace(tagText, "").replace(/\s+/g, " ").trim();
+        if (/activity|campaign/i.test(cls) || /活动/.test(extraText)) {
+          linkedActivities.push(`标签活动:${tagText || extraText}`);
+        }
+      }
+      const actHeading = [...document.querySelectorAll("div, span, p, label")].find(
+        (el) =>
+          el.children.length === 0 &&
+          ["参与话题", "参与活动", "活动"].includes((el.innerText || el.textContent || "").trim()) &&
+          el.getBoundingClientRect().height > 0
+      );
+      if (actHeading) {
+        let row = actHeading.parentElement;
+        for (let i = 0; i < 4 && row; i++) {
+          const r = row.getBoundingClientRect();
+          if (r.height >= 36 && r.height <= 260 && !(row.innerText || "").includes("创作声明")) break;
+          row = row.parentElement;
+        }
+        if (row) {
+          for (const el of row.querySelectorAll('[class*="active"], [class*="selected"], [class*="checked"]')) {
+            const clsTokens = (el.className || "").toString().split(/\s+/);
+            if (clsTokens.some((tok) => /inactive|unselected|unchecked/i.test(tok))) continue;
+            const t = (el.innerText || "").replace(/\s+/g, " ").trim();
+            const r = el.getBoundingClientRect();
+            if (
+              r.width > 0 &&
+              r.height > 0 &&
+              r.height < 64 &&
+              t &&
+              t.length <= 40 &&
+              !["参与话题", "参与活动", "活动", "搜索更多话题", "不参与"].includes(t)
+            ) {
+              linkedActivities.push(t);
+            }
+          }
+        }
+      }
       let coverInfo = null;
       try {
         const cc = document.querySelector(".cover-content");
@@ -399,7 +440,20 @@ export async function bilibiliReopenAndVerify(page, job) {
       } catch (e) {
         coverInfo = { err: e.message };
       }
-      return { url, draftId, uploadComplete, title, cat, tags, decl, selectedOpt, authSelected, quill, coverInfo };
+      return {
+        url,
+        draftId,
+        uploadComplete,
+        title,
+        cat,
+        tags,
+        decl,
+        selectedOpt,
+        authSelected,
+        quill,
+        linkedActivities: [...new Set(linkedActivities)],
+        coverInfo,
+      };
     });
 
     const issues = [];
@@ -411,6 +465,9 @@ export async function bilibiliReopenAndVerify(page, job) {
       issues.push(`创作声明不符: 期望「${expectedOpt}」，实际「${verified.selectedOpt}」`);
     }
     if (job.original && !verified.authSelected) issues.push("自制授权未勾选");
+    if (!job.allowActivities && verified.linkedActivities?.length > 0) {
+      issues.push(`存在未授权 B 站参与话题/活动: ${verified.linkedActivities.join("、")}`);
+    }
     if (job.bilibili.cover4x3 && job.bilibili.cover16x9 && !verified.coverInfo?.differentUrls) {
       issues.push("首页 4:3 与空间 16:9 封面未呈现独立 URL（可能发生同步覆盖或未落盘）");
     }

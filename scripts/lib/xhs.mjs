@@ -9,6 +9,183 @@ import {
 export const XHS_URL = "https://creator.xiaohongshu.com/publish/publish";
 
 /**
+ * 只读扫描小红书「关联活动」区块内处于已关联状态（出现「取消关联」按钮）的活动卡片。
+ * 严格限定在「关联活动」区域内，绝不误碰「商业组件」或其他开关。
+ */
+async function inspectXhsLinkedActivities(page) {
+  return page.evaluate(() => {
+    const isVisible = (el) => {
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    };
+    const heading = [...document.querySelectorAll("div, span, p, h2, h3, h4, label")].find(
+      (el) => el.children.length === 0 && (el.innerText || el.textContent || "").trim() === "关联活动" && isVisible(el)
+    );
+    let scope = null;
+    if (heading) {
+      let cur = heading.parentElement;
+      for (let i = 0; i < 6 && cur; i++) {
+        const r = cur.getBoundingClientRect();
+        const txt = cur.innerText || "";
+        if (r.height >= 60 && r.height <= 560 && !txt.includes("商业组件") && !txt.includes("定时发布")) {
+          scope = cur;
+        }
+        cur = cur.parentElement;
+      }
+    }
+    const headingRect = heading?.getBoundingClientRect() || null;
+    const root = scope || document;
+    const rawBtns = [...root.querySelectorAll("button, a, span, div")].filter((el) => {
+      if (el.children.length > 1) return false;
+      const t = (el.innerText || el.textContent || "").trim();
+      if (t !== "取消关联") return false;
+      const r = el.getBoundingClientRect();
+      if (r.width < 12 || r.height < 8 || r.height > 64) return false;
+      if (!scope) {
+        const cardText = (el.parentElement?.parentElement?.innerText || el.parentElement?.innerText || "").trim();
+        const nearHeading = headingRect && r.top >= headingRect.top - 20 && r.top <= headingRect.bottom + 380;
+        const hasDateRange = /\d{2}-\d{2}\s*至\s*\d{2}-\d{2}/.test(cardText);
+        if (!nearHeading && !hasDateRange) return false;
+      }
+      return true;
+    });
+
+    const dedup = [];
+    for (const el of rawBtns) {
+      if (rawBtns.some((other) => other !== el && el.contains(other))) continue;
+      let card = el.parentElement;
+      for (let i = 0; i < 4 && card; i++) {
+        const cr = card.getBoundingClientRect();
+        if (cr.width > 120 && cr.height >= 40 && cr.height <= 160) break;
+        card = card.parentElement;
+      }
+      const cardLines = (card?.innerText || "")
+        .split("\n")
+        .map((s) => s.trim())
+        .filter((s) => s && s !== "取消关联");
+      dedup.push({ name: cardLines[0] || "未命名活动" });
+    }
+    return dedup;
+  });
+}
+
+/**
+ * 解除小红书因添加话题被平台自动勾上的「关联活动」（逐个滚动并点击「取消关联」）。
+ * 绝不点击「关联」按钮。
+ */
+async function unlinkXhsActivities(page) {
+  const unlinked = [];
+  for (let guard = 0; guard < 5; guard++) {
+    const scrolled = await page.evaluate(() => {
+      const isVisible = (el) => {
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      };
+      const heading = [...document.querySelectorAll("div, span, p, h2, h3, h4, label")].find(
+        (el) => el.children.length === 0 && (el.innerText || el.textContent || "").trim() === "关联活动" && isVisible(el)
+      );
+      let scope = null;
+      if (heading) {
+        let cur = heading.parentElement;
+        for (let i = 0; i < 6 && cur; i++) {
+          const r = cur.getBoundingClientRect();
+          const txt = cur.innerText || "";
+          if (r.height >= 60 && r.height <= 560 && !txt.includes("商业组件") && !txt.includes("定时发布")) {
+            scope = cur;
+          }
+          cur = cur.parentElement;
+        }
+      }
+      const headingRect = heading?.getBoundingClientRect() || null;
+      const root = scope || document;
+      const rawBtns = [...root.querySelectorAll("button, a, span, div")].filter((el) => {
+        if (el.children.length > 1) return false;
+        const t = (el.innerText || el.textContent || "").trim();
+        if (t !== "取消关联") return false;
+        const r = el.getBoundingClientRect();
+        if (r.width < 12 || r.height < 8 || r.height > 64) return false;
+        if (!scope) {
+          const cardText = (el.parentElement?.parentElement?.innerText || el.parentElement?.innerText || "").trim();
+          const nearHeading = headingRect && r.top >= headingRect.top - 20 && r.top <= headingRect.bottom + 380;
+          const hasDateRange = /\d{2}-\d{2}\s*至\s*\d{2}-\d{2}/.test(cardText);
+          if (!nearHeading && !hasDateRange) return false;
+        }
+        return true;
+      });
+      const leaf = rawBtns.find((el) => !rawBtns.some((other) => other !== el && el.contains(other)));
+      if (!leaf) return false;
+      leaf.scrollIntoView({ block: "center", behavior: "instant" });
+      return true;
+    });
+    if (!scrolled) break;
+    await page.waitForTimeout(250);
+    const target = await page.evaluate(() => {
+      const isVisible = (el) => {
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      };
+      const heading = [...document.querySelectorAll("div, span, p, h2, h3, h4, label")].find(
+        (el) => el.children.length === 0 && (el.innerText || el.textContent || "").trim() === "关联活动" && isVisible(el)
+      );
+      let scope = null;
+      if (heading) {
+        let cur = heading.parentElement;
+        for (let i = 0; i < 6 && cur; i++) {
+          const r = cur.getBoundingClientRect();
+          const txt = cur.innerText || "";
+          if (r.height >= 60 && r.height <= 560 && !txt.includes("商业组件") && !txt.includes("定时发布")) {
+            scope = cur;
+          }
+          cur = cur.parentElement;
+        }
+      }
+      const headingRect = heading?.getBoundingClientRect() || null;
+      const root = scope || document;
+      const rawBtns = [...root.querySelectorAll("button, a, span, div")].filter((el) => {
+        if (el.children.length > 1) return false;
+        const t = (el.innerText || el.textContent || "").trim();
+        if (t !== "取消关联") return false;
+        const r = el.getBoundingClientRect();
+        if (r.width < 12 || r.height < 8 || r.height > 64) return false;
+        if (!scope) {
+          const cardText = (el.parentElement?.parentElement?.innerText || el.parentElement?.innerText || "").trim();
+          const nearHeading = headingRect && r.top >= headingRect.top - 20 && r.top <= headingRect.bottom + 380;
+          const hasDateRange = /\d{2}-\d{2}\s*至\s*\d{2}-\d{2}/.test(cardText);
+          if (!nearHeading && !hasDateRange) return false;
+        }
+        return true;
+      });
+      const leaf = rawBtns.find((el) => !rawBtns.some((other) => other !== el && el.contains(other)));
+      if (!leaf) return null;
+      const r = leaf.getBoundingClientRect();
+      let card = leaf.parentElement;
+      for (let i = 0; i < 4 && card; i++) {
+        const cr = card.getBoundingClientRect();
+        if (cr.width > 120 && cr.height >= 40 && cr.height <= 160) break;
+        card = card.parentElement;
+      }
+      const cardLines = (card?.innerText || "")
+        .split("\n")
+        .map((s) => s.trim())
+        .filter((s) => s && s !== "取消关联");
+      return {
+        name: cardLines[0] || "未命名活动",
+        x: Math.round(r.left + r.width / 2),
+        y: Math.round(r.top + r.height / 2),
+      };
+    });
+    if (!target) break;
+    await page.mouse.click(target.x, target.y, { label: `unlink XHS auto activity ${target.name}` });
+    unlinked.push(target.name);
+    await page.waitForTimeout(550);
+  }
+  return unlinked;
+}
+
+/**
  * 阶段 1a：检查登录态、记录原有草稿数，并注入成片。
  */
 export async function xhsInspectAndInject(page, job) {
@@ -101,17 +278,25 @@ export async function xhsFillAndSave(page, job) {
           (el) => el.getBoundingClientRect().height > 10
         );
         const parsed = items
-          .map((el) => ({
-            el,
-            name: (el.innerText || "").split("\n")[0].trim().replace(/^#/, ""),
-          }))
+          .map((el) => {
+            const lines = (el.innerText || "")
+              .split("\n")
+              .map((s) => s.trim())
+              .filter(Boolean);
+            const name = (lines[0] || "").replace(/^#/, "");
+            const meta = lines.slice(1).join(" ");
+            const isActivity = /活动|参与|有奖|打卡|征集/.test(meta);
+            return { el, name, isActivity };
+          })
           .filter((x) => x.name);
+        const nonActivity = parsed.filter((x) => !x.isActivity);
+        const pool = nonActivity.length ? nonActivity : parsed;
         const chosen =
-          parsed.find((x) => x.name.toLowerCase() === w.toLowerCase()) ||
-          parsed.find((x) => x.name.toLowerCase().startsWith(w.toLowerCase())) ||
-          parsed.find((x) => x.name.toLowerCase().includes(w.toLowerCase()));
+          pool.find((x) => x.name.toLowerCase() === w.toLowerCase()) ||
+          pool.find((x) => x.name.toLowerCase().startsWith(w.toLowerCase())) ||
+          pool.find((x) => x.name.toLowerCase().includes(w.toLowerCase()));
         if (chosen) chosen.el.click();
-        return { word: w, chosen: chosen?.name || null };
+        return { word: w, chosen: chosen?.name || null, skippedActivity: nonActivity.length < parsed.length };
       }, word);
       topicLogs.push(pick);
       await page.waitForTimeout(350);
@@ -275,6 +460,14 @@ export async function xhsFillAndSave(page, job) {
       coverResult = `uploaded_${job.xhs.coverRatio}_confirmed_${confirmed}`;
     }
 
+    // 5.5 解除平台因话题联动自动勾选的「关联活动」（全平台红线：除非显式 allowActivities）
+    step = "unlink_activities";
+    let unlinkedActivities = [];
+    if (!job.allowActivities) {
+      await page.waitForTimeout(300);
+      unlinkedActivities = await unlinkXhsActivities(page);
+    }
+
     // 6. 等待视频上传结束并点「暂存离开」
     step = "save_draft";
     await page
@@ -314,7 +507,7 @@ export async function xhsFillAndSave(page, job) {
       });
     }
 
-    return { status: "ok", topicLogs, coverResult, afterSave };
+    return { status: "ok", topicLogs, coverResult, unlinkedActivities, afterSave };
   } catch (err) {
     return makeFallback(step, err, await collectLightDiagnostics(page));
   }
@@ -432,11 +625,17 @@ export async function xhsReopenAndVerify(page, job) {
       };
     });
 
+    const linkedActivities = await inspectXhsLinkedActivities(page);
+    verified.linkedActivities = linkedActivities.map((a) => a.name);
+
     const issues = [];
     if (verified.stillUploading) issues.push("复开后视频仍处于上传中状态");
     if (verified.title !== job.xhs.title) issues.push(`标题不一致: "${verified.title}"`);
     if (verified.topics.length < job.xhs.topics.length) {
       issues.push(`话题实体数量不足: 实得 ${verified.topics.length}/${job.xhs.topics.length}`);
+    }
+    if (!job.allowActivities && verified.linkedActivities.length > 0) {
+      issues.push(`存在未授权关联活动: ${verified.linkedActivities.join("、")}，必须点击「取消关联」解除`);
     }
     const sched = verified.switches.find((s) => s.text.includes("定时"));
     if (sched?.checked) issues.push("定时发布开关被意外打开，必须关闭");

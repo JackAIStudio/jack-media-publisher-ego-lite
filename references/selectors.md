@@ -75,14 +75,15 @@ document.execCommand('insertText', false, '要填的内容'); // 清空用 'dele
 ### 小红书
 1. **先滚动并聚焦正文 `div.tiptap.ProseMirror` 上部区域**（避开底部悬浮 `<xhs-publish-btn>` 拦截点击，且防止关键词误敲进标题框），再点击 `button.contentBtn.topic-btn`（原生话题按钮）→ 编辑器插入 `#`；
 2. 用键盘输入查询词（不要先清空正文）；
-3. 等候本轮 `.tippy-box .item` 建议面板出现并稳定（先出现的可能是旧建议），精确核对名称后点击；
-4. 在正文内回读 `a.tiptap-topic`（或 `data-topic` 中的 `name`）。
+3. 等候本轮 `.tippy-box .item` 建议面板出现并稳定（先出现的可能是旧建议），优先选不带「活动 / 参与 / 有奖」标注的普通话题，精确核对名称后点击；
+4. 在正文内回读 `a.tiptap-topic`（或 `data-topic` 中的 `name`）；
+5. **检查并解除自动关联的活动**：选完话题后检查正文下方「关联活动」区块（紧邻「商业组件」上方）。只要 Jack 未明确提起要求参与某活动，凡出现红色「取消关联」按钮一律点击解除，并复核该区块已无「取消关联」。
 
 ### 抖音
-每轮点击 `text="#添加话题"`（或从最新快照取 `ref`），输入查询词。候选浮层可能附带播放量数字，排除编辑器自身后按精确名优先点击；随后在简介内回读 `[data-mention="#"]` / `[data-mention]` 文本，移出已选实体再打下一个词。
+每轮点击 `text="#添加话题"`（或从最新快照取 `ref`），输入查询词。候选浮层可能附带播放量数字或「活动 / 任务 / 激励」标注，排除编辑器自身并避开带活动/任务标注的候选，按精确名优先点击；随后在简介内回读 `[data-mention="#"]` / `[data-mention]` 文本，移出已选实体再打下一个词。绝不点击下方「添加活动 / 任务」等挂载入口（除非 Jack 明确提起）。
 
 ### B站
-- **标签**：先清理平台自动填充的无关标签（先 `scrollIntoView`，再用鼠标点击该标签 `.label-item-v2-container` 内关闭按钮的坐标，**不要直接对 `<svg>` 调 `.click()`，空框切勿按 Backspace**）；随后在标签框逐个输入目标标签按 Enter，回读 `.label-item-v2-content`。遇到「仅话题」词回车静默消失时，走「参与话题 → 搜索更多话题」精确选词确认，仍不成则记作待办，不悄悄改词。
+- **标签**：先清理平台自动填充的无关标签（先 `scrollIntoView`，再用鼠标点击该标签 `.label-item-v2-container` 内关闭按钮的坐标，**不要直接对 `<svg>` 调 `.click()`，空框切勿按 Backspace**）；随后在标签框逐个输入目标标签按 Enter，回读 `.label-item-v2-content`。遇到「仅话题」词回车静默消失时，**严禁未经 Jack 明确同意擅自走「参与话题」挂载活动**，直接将原词记作待办汇报，不悄悄改词也不擅自挂活动。
 - **投稿分区**：先 `scrollIntoView` 再打开 `.select-controller` 下拉，只在当前可见的 `.drop-list-v2-container.human-type-list` 中读取 `.drop-list-v2-content-wrp` 里的 `.drop-list-v2-item .item-cont-main` 选项，选中后收起并回读分区显示值。同名词也可能在 `.tag-pre-wrp` 标签区出现，需各自核对。
 
 ### 微信视频号
@@ -124,4 +125,11 @@ const isPanelActive = id =>
 先 `scrollIntoView` 等待滚动到位，再点击 `.cover-Jg3T4p >> nth=0` 打开双封面编辑器；切换「设置竖封面」/「设置横封面」tab 后如弹出「使用此素材作为封面？」点「直接编辑」。弹窗内优先对 `.upload-tips-KomyJM`（或「上传封面」/「点击上传文件或拖拽文件到这里」）挂 `waitForFileChooser` 并用 `mouse.click` 点击避开弹窗指针拦截。点底部「完成」并从「继续编辑」复开本稿后，从两张主卡片内的 `img.currentSrc` 回读图片资源并对照原图构图。
 
 ### 微信视频号：按成片方向核对卡片
-先等视频上传和转码完成，在主页面「封面预览」按名称和比例找到可见卡片（竖屏 1 个「个人主页和分享卡片(3:4)」；横屏 2 个「个人主页卡片 3:4」和「分享卡片 4:3」），点击对应卡片的「编辑」（如 `.vertical-img-wrap .edit-btn` / `.horizon-img-wrap .edit-btn`）。横屏设完第一张卡片后打开第二张时可能浮出「使用此素材作为封面？」提示，**点击「直接编辑」**真正进入编辑弹窗，在弹窗对 `.single-cover-uploader-wrap input[type="file"]` 选图，核对构图后**严格点击可见 `.weui-desktop-dialog__ft` 内文本等于 `"确认"` 的橙色主按钮**（切勿模糊匹配隐藏的「确定」），再回到主卡片核对回显图片。
+先等视频上传和转码完成，在主页面「封面预览」按名称和比例找到可见卡片（竖屏 1 个「个人主页和分享卡片(3:4)」；横屏 2 个「个人主页卡片 3:4」和「分享卡片 4:3」），点击对应卡片的「编辑」（如 `.vertical-img-wrap .edit-btn` / `.horizon-img-wrap .edit-btn`）。横屏设完第一张卡片后打开第二张时可能浮出「使用此素材作为封面？」提示，**点击「直接编辑」**真正进入编辑弹窗，在弹窗内优先对**当前可见**的 `.single-cover-uploader-wrap` 挂 `waitForFileChooser` 并点击触发选图（避免横屏双卡共存两个隐藏 `input[type="file"]` 导致误传到另一个槽位），核对构图后**严格点击可见 `.weui-desktop-dialog__ft` 内文本等于 `"确认"` 的橙色主按钮**（切勿模糊匹配隐藏的「确定」），再回到主卡片核对回显图片尺寸（`810×1080` 与 `1440×1080`）。
+
+### X（Media Studio）：自定义 16:9 缩略图两步路径
+无论是媒体详情页（`/library/<mediaKey>/edit`）还是撰写弹窗内点击「编辑媒体设置」展开的面板，上传自定义 16:9 视频封面**必须严格按两步执行**：
+1. 点击蓝色描边按钮 **`button:has-text("更改缩略图")`**，播放器下方会出现「选择一帧或`上传`图片」以及「取消」「选择」按钮；
+2. **先挂 `page.waitForFileChooser()`，再点击文字链接 `a:text-is("上传")`**（**切勿**盲找页面里的第一个 `input[type="file"]`，该控件是媒体库主上传框，会把封面误传成独立图片素材！）；
+3. 选图建议先压成 **≤ 1 MB 的高清 16:9 JPG**（实测超过 2 MB 的无损 PNG 易慢传或被拒）；上传后静候转圈完成与 `upload.json (FINALIZE 201)` → `edit.json (200)` +「保存成功」提示；
+4. **验收方式**：视频播放器若已解码第 0 帧或 `currentTime > 0`，肉眼画面仍会停在视频帧，必须调用 `page.fetch("/1/library/get.json?...&media_key=<mediaKey>")` 核对服务器端返回的新缩略图已切换为 `https://pbs.twimg.com/media/...`（取代默认 `amplify_video_thumb/...`）并可拉图核验构图。

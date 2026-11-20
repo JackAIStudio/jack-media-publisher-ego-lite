@@ -85,23 +85,34 @@ export async function douyinFillAndSave(page, job) {
           if (el.closest("div.zone-container.editor-kit-container")) continue;
           const txt = (el.innerText || "").trim();
           if (!txt || txt.length > 80) continue;
-          const firstLine = txt.split("\n")[0].trim().replace(/^#/, "");
+          const lines = txt.split("\n").map((s) => s.trim()).filter(Boolean);
+          const firstLine = (lines[0] || "").replace(/^#/, "");
           if (!firstLine.toLowerCase().includes(w.toLowerCase())) continue;
+          const meta = lines.slice(1).join(" ");
+          const isActivity = /活动|任务|激励|有奖|挑战赛|征集/.test(meta);
           const hasPlayCount =
-            txt.includes("播放") || txt.includes("万") || txt.includes("亿") || /\d+/.test(txt.split("\n")[1] || "");
+            txt.includes("播放") || txt.includes("万") || txt.includes("亿") || /\d+/.test(lines[1] || "");
           cands.push({
             firstLine,
             area: r.width * r.height,
+            isActivity,
             hasPlayCount,
             x: Math.round(r.left + r.width / 2),
             y: Math.round(r.top + r.height / 2),
           });
         }
-        cands.sort((a, b) => Number(b.hasPlayCount) - Number(a.hasPlayCount) || a.area - b.area);
+        cands.sort(
+          (a, b) =>
+            Number(a.isActivity) - Number(b.isActivity) ||
+            Number(b.hasPlayCount) - Number(a.hasPlayCount) ||
+            a.area - b.area
+        );
+        const nonActivity = cands.filter((c) => !c.isActivity);
+        const pool = nonActivity.length ? nonActivity : cands;
         const chosen =
-          cands.find((c) => c.firstLine.toLowerCase() === w.toLowerCase()) ||
-          cands.find((c) => c.firstLine.toLowerCase().startsWith(w.toLowerCase())) ||
-          cands[0];
+          pool.find((c) => c.firstLine.toLowerCase() === w.toLowerCase()) ||
+          pool.find((c) => c.firstLine.toLowerCase().startsWith(w.toLowerCase())) ||
+          pool[0];
         return chosen ? { found: true, ...chosen } : { found: false };
       }, word);
 
@@ -403,6 +414,25 @@ export async function douyinReopenAndVerify(page, job) {
         vh: v.videoHeight,
       }));
       const txt = (document.body?.innerText || "").replace(/\s+/g, " ");
+      const linkedActivities = [];
+      for (const labelEl of document.querySelectorAll("div, span, label, p")) {
+        if (labelEl.children.length > 0) continue;
+        const lt = (labelEl.innerText || labelEl.textContent || "").trim();
+        if (!["添加活动", "参与活动", "关联活动", "活动", "任务"].includes(lt)) continue;
+        const lr = labelEl.getBoundingClientRect();
+        if (lr.height <= 0 || lr.height > 45) continue;
+        let row = labelEl.parentElement;
+        for (let i = 0; i < 4 && row; i++) {
+          const rr = row.getBoundingClientRect();
+          if (rr.width > 200 && rr.height >= 28 && rr.height <= 180) break;
+          row = row.parentElement;
+        }
+        if (!row) continue;
+        const rowTxt = (row.innerText || "").replace(/\s+/g, " ").trim();
+        if (/取消关联|取消参与|删除活动|已参与/.test(rowTxt)) {
+          linkedActivities.push(rowTxt.slice(0, 60));
+        }
+      }
       return {
         url: location.href,
         title,
@@ -410,6 +440,7 @@ export async function douyinReopenAndVerify(page, job) {
         mentions,
         decl,
         missingCoverWarn: txt.includes("横/竖双封面缺失"),
+        linkedActivities: [...new Set(linkedActivities)],
         covers,
         vids,
       };
@@ -422,6 +453,9 @@ export async function douyinReopenAndVerify(page, job) {
       issues.push(`话题实体数量不足: ${verified.mentions.length}/${job.douyin.topics.length}`);
     }
     if (!verified.decl.includes(expectedDecl)) issues.push(`自主声明不符: 期望「${expectedDecl}」，实际「${verified.decl}」`);
+    if (!job.allowActivities && verified.linkedActivities?.length > 0) {
+      issues.push(`存在未授权关联活动/任务: ${verified.linkedActivities.join("、")}`);
+    }
     if (job.douyin.cover3x4 && job.douyin.cover4x3 && verified.missingCoverWarn) {
       issues.push("页面仍显示「横/竖双封面缺失」");
     }

@@ -478,6 +478,31 @@ export async function wechatVerifyAndLabel(task, origPage, job) {
       const orig = !!root.querySelector('.declare-original-checkbox input[type="checkbox"]')?.checked;
       const shortTitle =
         root.querySelector('input[placeholder*="概括视频主要内容"], input[placeholder*="短标题"]')?.value || "";
+      const linkedActivities = [];
+      const actLabel = [...root.querySelectorAll("div, span, label, p")].find(
+        (el) =>
+          el.children.length === 0 &&
+          (el.innerText || el.textContent || "").trim() === "活动" &&
+          el.getBoundingClientRect().height > 0
+      );
+      if (actLabel) {
+        let row = actLabel.parentElement;
+        for (let i = 0; i < 4 && row; i++) {
+          const r = row.getBoundingClientRect();
+          if (r.width > 180 && r.height >= 24 && r.height <= 140) break;
+          row = row.parentElement;
+        }
+        if (row) {
+          const val = (row.innerText || "")
+            .replace(/^活动/, "")
+            .replace(/\s+/g, " ")
+            .trim();
+          const placeholders = new Set(["", "添加活动", "选择活动", "请选择活动", "不参与", "暂不参与", "不参与活动"]);
+          if (val && !placeholders.has(val) && !/^(添加|选择|请选择)活动/.test(val)) {
+            linkedActivities.push(val.slice(0, 60));
+          }
+        }
+      }
       const probe = (sel) => {
         const w = root.querySelector(sel);
         if (!w || w.getBoundingClientRect().height === 0) return null;
@@ -503,6 +528,7 @@ export async function wechatVerifyAndLabel(task, origPage, job) {
         shortTitle,
         pos,
         orig,
+        linkedActivities,
         v3x4: probe(".vertical-img-wrap"),
         h4x3: probe(".horizon-img-wrap"),
         hasTargetLabel: bodyText.includes(lbl),
@@ -516,6 +542,9 @@ export async function wechatVerifyAndLabel(task, origPage, job) {
       issues.push(`位置不符: 期望「${job.wechat.location}」，实际「${origPageFinal.pos}」`);
     }
     if (job.original && !origPageFinal.orig) issues.push("原创声明未勾选");
+    if (!job.allowActivities && origPageFinal.linkedActivities?.length > 0) {
+      issues.push(`微信视频号存在未授权关联活动: ${origPageFinal.linkedActivities.join("、")}`);
+    }
     if (!origPageFinal.hasTargetLabel || origPageFinal.hasPlaceholderLabel) {
       issues.push(`原编辑页视频标注未正确设为「${targetLabel}」`);
     }

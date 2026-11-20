@@ -177,6 +177,7 @@ export function validateAndNormalizeJob(rawJob, options = {}) {
   }
 
   const original = job.original !== false; // 默认本人自制原创，可显式设为 false
+  const allowActivities = job.allowActivities === true; // 全平台红线：默认绝不关联任何活动，仅当用户明确提起并显式开启时才允许
 
   // 探测成片
   let videoMeta = null;
@@ -274,6 +275,7 @@ export function validateAndNormalizeJob(rawJob, options = {}) {
     covers,
     original,
     aiGenerated: job.aiGenerated,
+    allowActivities,
     topics: baseTopics,
     xhs: {
       title: job.xhs?.title || title,

@@ -63,6 +63,25 @@ class PublishingRules(unittest.TestCase):
                 self.assertRegex(text, r'横屏[^\n]*4:3')
                 self.assertNotRegex(text, r'给了封面时默认用\s*3:4|封面默认用\s*3:4\s*竖图')
 
+    def test_no_activity_association_rule(self):
+        for rel in ('SKILL.md', 'references/platforms.md', 'references/verification.md', 'references/gotchas.md'):
+            text = (ROOT / rel).read_text(encoding='utf-8')
+            with self.subTest(file=rel):
+                self.assertRegex(text, r'关联活动|禁止关联活动')
+                self.assertIn('取消关联', text)
+                self.assertNotRegex(text, r'改走「参与话题\s*→\s*搜索更多话题」|走「参与话题\s*→\s*搜索更多话题」精确选词')
+
+        forbidden_link_activity_click = re.compile(
+            r'''(?:click|press)\s*\([^)]*(?:text="关联"|has-text\("关联"\)|text="关联活动"|text="添加活动"|text="参与活动"|text="参与话题")'''
+        )
+        for script in sorted((ROOT / 'scripts').rglob('*.mjs')):
+            source = script.read_text(encoding='utf-8')
+            with self.subTest(script=str(script.relative_to(ROOT))):
+                self.assertIsNone(
+                    forbidden_link_activity_click.search(source),
+                    f'Hard boundary violation: script must never click to link activities ({script.name})',
+                )
+
     def test_markdown_links_and_anchors(self):
         for path in [ROOT / 'SKILL.md', ROOT / 'README.md', *sorted((ROOT / 'references').glob('*.md'))]:
             text = path.read_text(encoding='utf-8')
@@ -153,6 +172,7 @@ console.log(JSON.stringify(out));
             self.assertTrue(payload['dryRun'])
             self.assertEqual(payload['normalized']['xhs']['coverRatio'], '3x4')
             self.assertEqual(payload['normalized']['wechat']['location'], '不显示位置')
+            self.assertFalse(payload['normalized']['allowActivities'])
 
             # Test platform-specific douyin.title override when original title exceeds 30 chars (but XHS <= 20)
             dy_job_path = Path(tmpdir) / 'job_dy_override.json'
