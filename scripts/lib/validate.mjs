@@ -115,7 +115,7 @@ export function probeImage(imgPath) {
   return { path: abs, width: w, height: h, ratio: h > 0 ? Number((w / h).toFixed(3)) : 0 };
 }
 
-const VALID_PLATFORMS = ["xhs", "douyin", "bilibili", "wechat"];
+const VALID_PLATFORMS = ["xhs", "douyin", "bilibili", "wechat", "x"];
 
 /**
  * 校验并标准化任务配置，返回含探测元数据与默认推导结果的 normalizedJob。
@@ -160,6 +160,10 @@ export function validateAndNormalizeJob(rawJob, options = {}) {
   }
   if (platforms.includes("bilibili") && biliLen > 80) {
     errors.push(`B 站标题字数为 ${biliLen}/80（超限）。`);
+  }
+  const xTitle = (job.x?.title || title).trim();
+  if (platforms.includes("x") && [...xTitle].length > 70) {
+    errors.push(`X 媒体标题字数为 ${[...xTitle].length}/70（超限），请在 job.x.title 显式提供 ≤70 字标题。`);
   }
 
   const shortTitle = job.wechat?.shortTitle || "";
@@ -242,9 +246,21 @@ export function validateAndNormalizeJob(rawJob, options = {}) {
     const isMov = path.extname(videoMeta.path).toLowerCase() === ".mov";
     if (isMov && (is10BitHevc || isPcmAudio)) {
       warnings.push(
-        `成片为 ${videoMeta.videoCodec}(${videoMeta.pixFmt || videoMeta.videoProfile || "10bit"}) / ${videoMeta.audioCodec} .mov，小红书网页端前端解析可能卡死或停在 0%；如遇阻塞可征得作者同意后仅为小红书生成高码率 8-bit H.264 + AAC MP4 并写入 job.xhs.videoPath。`
+        `成片为 ${videoMeta.videoCodec}(${videoMeta.pixFmt || videoMeta.videoProfile || "10bit"}) / ${videoMeta.audioCodec} .mov：小红书默认先按正常流程直接上传原片（切勿提前预防性转码）；仅在实测前端无响应或进度停在 0% 时，再征得作者同意仅为小红书生成 8-bit H.264 + AAC MP4 并写入 job.xhs.videoPath 兜底。`
       );
     }
+  }
+
+  let xVideoPath = null;
+  if (job.x?.videoPath) {
+    if (!fs.existsSync(job.x.videoPath)) {
+      errors.push(`X 指定视频文件不存在: ${job.x.videoPath}`);
+    } else {
+      xVideoPath = path.resolve(job.x.videoPath);
+    }
+  }
+  if (platforms.includes("x") && !covers["16x9"] && !job.x?.cover16x9) {
+    warnings.push("未提供 16:9 封面，X（Media Studio）将保留平台默认抽帧缩略图。");
   }
 
   if (platforms.includes("bilibili") && !job.bilibili?.category) {
@@ -257,12 +273,18 @@ export function validateAndNormalizeJob(rawJob, options = {}) {
     throw err;
   }
 
+  const baseDescription = typeof job.description === "string" ? job.description.trim() : "";
   const baseTopics = Array.isArray(job.topics) ? job.topics.map((t) => String(t).replace(/^#/, "").trim()).filter(Boolean) : [];
   const biliTags = Array.isArray(job.bilibili?.tags) && job.bilibili.tags.length
     ? job.bilibili.tags.map((t) => String(t).replace(/^#/, "").trim()).filter(Boolean)
     : baseTopics;
 
-  const taskName = job.taskName || `四平台草稿 · ${title.slice(0, 18)}`;
+  const taskName = job.taskName || `五平台草稿 · ${title.slice(0, 18)}`;
+
+  const topicLine = baseTopics.slice(0, 5).map((t) => `#${t}`).join(" ");
+  const defaultWechatDesc = baseDescription
+    ? [title, baseDescription, topicLine].filter(Boolean).join("\n\n")
+    : (topicLine ? `${title} ${topicLine}` : title);
 
   return {
     taskName,
@@ -270,7 +292,8 @@ export function validateAndNormalizeJob(rawJob, options = {}) {
     pageLabels: job.pageLabels || {},
     platforms,
     title,
-    titleMetrics: { xhsWeight, dyLen, biliLen },
+    description: baseDescription,
+    titleMetrics: { xhsWeight, dyLen, biliLen, xLen: [...xTitle].length },
     video: videoMeta,
     covers,
     original,
@@ -279,6 +302,7 @@ export function validateAndNormalizeJob(rawJob, options = {}) {
     topics: baseTopics,
     xhs: {
       title: job.xhs?.title || title,
+      description: job.xhs?.description ?? baseDescription,
       topics: job.xhs?.topics || baseTopics.slice(0, 5),
       videoPath: xhsVideoPath,
       coverRatio: xhsCoverRatio,
@@ -286,6 +310,7 @@ export function validateAndNormalizeJob(rawJob, options = {}) {
     },
     douyin: {
       title: job.douyin?.title || title,
+      description: job.douyin?.description ?? baseDescription,
       topics: job.douyin?.topics || baseTopics.slice(0, 5),
       allowContinueExisting: Boolean(job.douyin?.allowContinueExisting),
       cover3x4: covers["3x4"]?.path || null,
@@ -295,21 +320,24 @@ export function validateAndNormalizeJob(rawJob, options = {}) {
       title,
       category: job.bilibili?.category || "人工智能",
       tags: biliTags.slice(0, 10),
-      description: job.bilibili?.description || "",
+      description: job.bilibili?.description ?? baseDescription,
       cover4x3: covers["4x3"]?.path || null,
       cover16x9: covers["16x9"]?.path || null,
     },
     wechat: {
       topics: job.wechat?.topics || baseTopics.slice(0, 5),
-      description:
-        job.wechat?.description ||
-        (baseTopics.length
-          ? `${title} ${baseTopics.slice(0, 5).map((t) => `#${t}`).join(" ")}`
-          : title),
+      description: job.wechat?.description || defaultWechatDesc,
       shortTitle,
       location: job.wechat?.location || "不显示位置",
       cover3x4: covers["3x4"]?.path || null,
       cover4x3: covers["4x3"]?.path || null,
+    },
+    x: {
+      title: xTitle,
+      description: job.x?.description || "",
+      tweetText: job.x?.tweetText || "",
+      videoPath: xVideoPath,
+      cover16x9: job.x?.cover16x9 ? path.resolve(job.x.cover16x9) : (covers["16x9"]?.path || null),
     },
     warnings,
   };

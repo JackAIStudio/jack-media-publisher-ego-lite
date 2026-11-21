@@ -244,6 +244,12 @@ export async function xhsFillAndSave(page, job) {
     await page.keyboard.press("Backspace");
     await page.waitForTimeout(200);
 
+    if (job.xhs.description) {
+      await page.keyboard.insertText(job.xhs.description);
+      await page.keyboard.press("Enter");
+      await page.waitForTimeout(250);
+    }
+
     const topicLogs = [];
     for (const word of job.xhs.topics) {
       await page.evaluate(() => {
@@ -596,7 +602,12 @@ export async function xhsReopenAndVerify(page, job) {
         (el.innerText || "").replace(/\s+/g, " ").slice(0, 30)
       );
       const coverImgs = [...document.querySelectorAll('img.cover, .default--ai-cover-layout img, [class*="preview"] img')]
-        .filter((i) => i.naturalWidth >= 400 || ((i.className || "").toString().includes("cover") && i.naturalWidth >= 200))
+        .filter((i) => {
+          const cls = (i.className || "").toString();
+          if (/coverDetectTag|activity-cover|ai-cover-preview-card/i.test(cls)) return false;
+          return i.naturalWidth >= 400 || (cls === "cover" && i.naturalWidth >= 200);
+        })
+        .sort((a, b) => (b.naturalWidth || 0) - (a.naturalWidth || 0))
         .map((img) => ({
           cls: (img.className || "").toString().slice(0, 30),
           nw: img.naturalWidth,

@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 /**
- * Jack 四平台发布快速通道 CLI（Fast Path Runner）
+ * Jack 五平台发布快速通道 CLI（Fast Path Runner）
  *
  * 用法：
- *   node scripts/run.mjs --job /abs/path/job.json --stage pass1 [--platforms xhs,douyin]
- *   node scripts/run.mjs --job /abs/path/job.json --stage pass2 [--platforms wechat]
+ *   node scripts/run.mjs --job /abs/path/job.json --stage pass1 [--platforms xhs,douyin,bilibili,wechat,x]
+ *   node scripts/run.mjs --job /abs/path/job.json --stage pass2 [--platforms wechat,x]
  *   node scripts/run.mjs --job /abs/path/job.json --stage finish
  *   node scripts/run.mjs --job /abs/path/job.json --dry-run
  *   node scripts/run.mjs --stage offline
  *
  * 设计理念：
- * - 脚本是「快速通道」，不是刚性黑盒；四平台彼此 try/catch 隔离。
+ * - 脚本是「快速通道」，不是刚性黑盒；五平台彼此 try/catch 隔离。
  * - 若某平台因前端改版、未知弹窗或验收红灯返回 needs_agent_fallback，
  *   保留现场标签页，由 Agent 自主接管修补该平台，其余绿灯平台不受影响。
  * - 任何情况下绝不点击最终发布或定时发布按钮。
@@ -37,7 +37,7 @@ function parseArgs(argv) {
       console.log(
         [
           "Usage:",
-          "  node scripts/run.mjs --job <job.json> --stage <pass1|pass2|finish> [--platforms xhs,douyin,bilibili,wechat]",
+          "  node scripts/run.mjs --job <job.json> --stage <pass1|pass2|finish> [--platforms xhs,douyin,bilibili,wechat,x]",
           "  node scripts/run.mjs --job <job.json> --dry-run",
           "  node scripts/run.mjs --stage offline",
         ].join("\n")

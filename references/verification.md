@@ -50,6 +50,7 @@
 | 抖音 | 重开草稿后分别核对横、竖主卡内的 `img.currentSrc`。「横/竖双封面缺失」警告消失只说明平台检测到槽里有图 |
 | B 站 | 核对主表单 `.cover-content` 中首页推荐（`extra`）与个人空间（`main`）各自绑定的平台图片（如 `biliimg.com`），再对照各自的源图 |
 | 微信视频号 | 回到刚才点「编辑」的主卡，核对平台回显的图片（如 `finder.video.qq.com`）是否对应来图 |
+| X（Media Studio） | 调 `/1/library/get.json?user_id=<uid>&media_key=<mediaKey>` 核对返回 `preview.source` 已切为 `https://pbs.twimg.com/media/...`（取代默认 `amplify_video_thumb/...`）且 `title` 一致 |
 
 平台可为同一图片复用 CDN URL，也可更新同一图片的签名。URL 的变化或异同都不能单独判定来源。核验时可在页内查看图片绑定，报告只列卡片、比例、来源与结果，私有签名 URL 不写入日志或交付内容。
 

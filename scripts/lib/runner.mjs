@@ -5,12 +5,14 @@ import { XHS_URL, xhsInspectAndInject, xhsFillAndSave, xhsReopenAndVerify } from
 import { DOUYIN_URL, douyinInspectAndInject, douyinFillAndSave, douyinReopenAndVerify } from "./douyin.mjs";
 import { BILI_URL, bilibiliInspectAndInject, bilibiliFillAndSave, bilibiliReopenAndVerify } from "./bilibili.mjs";
 import { WECHAT_URL, wechatInspectAndInject, wechatFillAndSave, wechatVerifyAndLabel } from "./wechat.mjs";
+import { X_URL, xInspectAndInject, xFillAndSave, xVerifyAndCompose } from "./x.mjs";
 
 const PLATFORM_URLS = {
   xhs: XHS_URL,
   douyin: DOUYIN_URL,
   bilibili: BILI_URL,
   wechat: WECHAT_URL,
+  x: X_URL,
 };
 
 /**
@@ -125,7 +127,7 @@ async function runOfflineDrill(ctx, skillRoot) {
 }
 
 /**
- * Pass 1：开空间 + 并行打开并验登录 + 并行投递视频 + 静音 + 依次填稿存草稿（四平台独立隔离）。
+ * Pass 1：开空间 + 并行打开并验登录 + 并行投递视频 + 静音 + 依次填稿存草稿（五平台独立隔离）。
  */
 async function runPass1(ctx, job) {
   const task = await resolveSpace(ctx, job, false);
@@ -180,6 +182,7 @@ async function runPass1(ctx, job) {
     douyin: douyinInspectAndInject,
     bilibili: bilibiliInspectAndInject,
     wechat: wechatInspectAndInject,
+    x: xInspectAndInject,
   };
   const injectResults = {};
   await Promise.all(
@@ -194,13 +197,14 @@ async function runPass1(ctx, job) {
 
   await Promise.all(job.platforms.map((key) => muteAndPausePage(pageMap[key])));
 
-  // 按黄金顺序执行填稿存草稿：小红书 -> 抖音 -> B 站 -> 最后微信视频号（此时转码已完成）
-  const fillOrder = ["xhs", "douyin", "bilibili", "wechat"].filter((k) => job.platforms.includes(k));
+  // 按黄金顺序执行填稿存草稿：小红书 -> 抖音 -> B 站 -> 微信视频号 -> X（此时转码均已完成）
+  const fillOrder = ["xhs", "douyin", "bilibili", "wechat", "x"].filter((k) => job.platforms.includes(k));
   const fillHandlers = {
     xhs: xhsFillAndSave,
     douyin: douyinFillAndSave,
     bilibili: bilibiliFillAndSave,
     wechat: wechatFillAndSave,
+    x: xFillAndSave,
   };
 
   const results = {};
@@ -229,7 +233,7 @@ async function runPass1(ctx, job) {
 }
 
 /**
- * Pass 2：四平台统一复开总检 + 微信原页设置最终视频标注 + 四页恢复暂停未静音。
+ * Pass 2：五平台统一复开总检 + 微信原页设置最终视频标注 + X 核验缩略图进撰写页 + 全页恢复暂停未静音。
  */
 async function runPass2(ctx, job) {
   const task = await resolveSpace(ctx, job, true);
@@ -248,6 +252,7 @@ async function runPass2(ctx, job) {
     else if (key === "douyin") results[key] = await douyinReopenAndVerify(page, job);
     else if (key === "bilibili") results[key] = await bilibiliReopenAndVerify(page, job);
     else if (key === "wechat") results[key] = await wechatVerifyAndLabel(task, page, job);
+    else if (key === "x") results[key] = await xVerifyAndCompose(page, job);
 
     audioRestored[key] = await restorePausedUnmuted(page);
   }

@@ -68,6 +68,12 @@ export async function douyinFillAndSave(page, job) {
     await page.keyboard.press("Backspace");
     await page.waitForTimeout(200);
 
+    if (job.douyin.description) {
+      await page.keyboard.insertText(job.douyin.description);
+      await page.keyboard.press("Enter");
+      await page.waitForTimeout(250);
+    }
+
     const topicLogs = [];
     for (const word of job.douyin.topics) {
       await page.click('text="#添加话题"', { label: `DY add topic ${word}` });

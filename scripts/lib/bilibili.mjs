@@ -122,6 +122,19 @@ export async function bilibiliFillAndSave(page, job) {
     );
     const missingTags = job.bilibili.tags.filter((t) => !tagsAfter.includes(t));
 
+    // 3.5 可选简介（默认留空；用户指定统一简介或 bilibili.description 时写入 Quill）
+    if (job.bilibili.description) {
+      step = "description";
+      await page.evaluate(() => document.querySelector("div.ql-editor")?.scrollIntoView({ block: "center" }));
+      await page.waitForTimeout(200);
+      await page.click("div.ql-editor", { label: "focus Bili description" });
+      await page.keyboard.press("ControlOrMeta+a");
+      await page.keyboard.press("Backspace");
+      await page.waitForTimeout(150);
+      await page.keyboard.insertText(job.bilibili.description);
+      await page.waitForTimeout(300);
+    }
+
     // 4. 创作声明 + 自制授权
     step = "declarations";
     const targetDecl = job.aiGenerated ? "含AI生成内容" : "内容无需标注";

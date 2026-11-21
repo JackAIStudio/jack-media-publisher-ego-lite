@@ -105,7 +105,7 @@ class PublishingRules(unittest.TestCase):
         scripts = sorted((ROOT / 'scripts').rglob('*.mjs'))
         self.assertGreaterEqual(len(scripts), 6, 'Expected modular fast-path scripts under scripts/')
         forbidden_publish_click = re.compile(
-            r'''(?:click|press)\s*\([^)]*(?:发布笔记|立即投稿|text="发布"|text="发表"|has-text\("发布"\)|has-text\("发表"\)|定时发布|安排时间)'''
+            r'''(?:click|press)\s*\([^)]*(?:发布笔记|立即投稿|text="发布"|text="发表"|has-text\("发布"\)|has-text\("发表"\)|text="帖子"|has-text\("帖子"\)|预排期帖子|定时发布|安排时间)'''
         )
         for script in scripts:
             with self.subTest(script=str(script.relative_to(ROOT))):
@@ -170,8 +170,11 @@ console.log(JSON.stringify(out));
             self.assertEqual(dry.returncode, 0, f'Dry-run failed: {dry.stderr}\n{dry.stdout}')
             payload = json.loads(dry.stdout)
             self.assertTrue(payload['dryRun'])
+            self.assertEqual(payload['normalized']['platforms'], ['xhs', 'douyin', 'bilibili', 'wechat', 'x'])
             self.assertEqual(payload['normalized']['xhs']['coverRatio'], '3x4')
             self.assertEqual(payload['normalized']['wechat']['location'], '不显示位置')
+            self.assertEqual(payload['normalized']['x']['description'], '')
+            self.assertEqual(payload['normalized']['x']['tweetText'], '')
             self.assertFalse(payload['normalized']['allowActivities'])
 
             # Test platform-specific douyin.title override when original title exceeds 30 chars (but XHS <= 20)
@@ -206,6 +209,18 @@ console.log(JSON.stringify(out));
             self.assertEqual(p2['titleMetrics']['xhsWeight'], 20)
             self.assertEqual(p2['titleMetrics']['dyLen'], 34)
             self.assertTrue(p2['xhs']['videoPath'].endswith('clip.mp4'))
+
+    def test_five_platforms_equal_and_xhs_original_first(self):
+        for rel in ('SKILL.md', 'README.md', 'references/platforms.md'):
+            text = (ROOT / rel).read_text(encoding='utf-8')
+            with self.subTest(file=rel):
+                self.assertNotIn('可选扩展渠道', text)
+                self.assertIn('X（Media Studio）', text)
+                self.assertNotIn('默认四平台', text)
+        gotchas = (ROOT / 'references/gotchas.md').read_text(encoding='utf-8')
+        skill = (ROOT / 'SKILL.md').read_text(encoding='utf-8')
+        self.assertIn('原片优先', gotchas)
+        self.assertIn('原片优先', skill)
 
 
 if __name__ == '__main__':

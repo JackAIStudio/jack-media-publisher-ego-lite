@@ -1,6 +1,6 @@
 # Jack Media Publisher for Ego Lite
 
-让支持 Agent Skills 的桌面助手用 Ego Lite 把一条本地视频准备成小红书、抖音、B 站和微信视频号的草稿。每个平台填好就存稿，再从平台入口复开同一稿，核对标题、话题、声明和封面。最后由作者手动发布。
+让支持 Agent Skills 的桌面助手用 Ego Lite 把一条本地视频准备成**小红书、抖音、B 站、微信视频号和 X（Media Studio）**五平台的待发草稿（未指定平台时默认五平台同等全准备）。国内四平台填好存稿并复开核对，X 上传至 Media Studio 设标题与 16:9 缩略图并停在撰写页，最后全部留页由作者手动发布。
 
 ## 安装
 
@@ -40,6 +40,7 @@ git -C "$HOME/.agents/skills/jack-media-publisher-ego-lite" pull --ff-only
 - **抖音**：同时使用 4:3 横封面和 3:4 竖封面。
 - **B 站**：使用 4:3 首页推荐封面和 16:9 个人空间封面。
 - **微信视频号**：竖屏成片使用共用 3:4 卡片；横屏成片使用 3:4 个人主页卡片和 4:3 分享卡片。
+- **X（Media Studio）**：使用 16:9 高清缩略图（≤ 1 MB JPG/PNG），媒体「说明」与撰写页推文正文默认留空交由作者填写。
 
 素材探测可用 FFmpeg 中的 `ffprobe`。若未说明目标平台、AI 生成素材事实或存在同名历史空间，助手会先给出紧凑对齐清单确认后再动手。
 
@@ -51,10 +52,11 @@ git -C "$HOME/.agents/skills/jack-media-publisher-ego-lite" pull --ff-only
 | 抖音 | 点「暂存离开」，从上传页点「继续编辑」，用标题和视频时长确认稿件。 |
 | B 站 | 点「存草稿」，从「稿件管理 → 草稿」复开目标条目。 |
 | 微信视频号 | 点「保存草稿」，在另一个标签页从草稿箱复核。原编辑页最后设置视频标注，留给作者发表。 |
+| X（Media Studio） | 在 `studio.x.com/library` 上传并完成标题与 16:9 缩略图校验后，留在 `/library/<mediaKey>/compose` 撰写页等待作者发帖。 |
 
 ## 快速通道脚本与 Agent 兜底
 
-仓库自带参数化快速通道脚本 [`scripts/run.mjs`](<scripts/run.mjs>)（`--dry-run` / `--stage pass1|pass2|finish|offline`），以「两段式流水线（先批量填稿存草稿 → 再统一复开总检）」减少模型推理轮次与冗余截屏。脚本仅是加速通道：四平台彼此隔离执行，任何平台如因前端改版或异常弹窗返回 `needs_agent_fallback`，现场标签页会原样保留并交由助手接管排查补齐，绝不会阻断其余平台。
+仓库自带参数化快速通道脚本 [`scripts/run.mjs`](<scripts/run.mjs>)（`--dry-run` / `--stage pass1|pass2|finish|offline`），以「两段式流水线（先批量填稿存草稿 → 再统一复开总检）」减少模型推理轮次与冗余截屏。脚本仅是加速通道：五平台彼此隔离执行，任何平台如因前端改版或异常弹窗返回 `needs_agent_fallback`，现场标签页会原样保留并交由助手接管排查补齐，绝不会阻断其余平台。
 
 ## 本机规则自检
 
@@ -66,4 +68,4 @@ python3 -IB -m unittest discover -s tests -p 'test_*.py' -v
 
 [完整操作规则](<SKILL.md>) · [平台暗坑记录](<references/gotchas.md>) · [验收依据](<references/verification.md>)
 
-本项目沿用了 Jack 的四平台发布偏好，草稿辨认与中断续做参考了 Oil 的发布流程。[Jack Media Publisher](https://github.com/JackAIStudio/jack-media-publisher) · [Oil Video Publisher](https://github.com/oil-oil/video-publisher-skill)
+本项目沿用了 Jack 的五平台发布偏好，草稿辨认与中断续做参考了 Oil 的发布流程。[Jack Media Publisher](https://github.com/JackAIStudio/jack-media-publisher) · [Oil Video Publisher](https://github.com/oil-oil/video-publisher-skill)
