@@ -49,7 +49,7 @@ export async function xInspectAndInject(page, job) {
 }
 
 /**
- * 阶段 1b：等待视频处理完成 -> 进入 /library/<mediaKey>/edit -> 填标题（说明默认留空）-> 两步法上传 16:9 缩略图。
+ * 阶段 1b：等待视频处理完成 -> 进入 /library/<mediaKey>/edit -> 填标题（说明默认留空）-> 两步法上传与成片方向匹配的缩略图。
  */
 export async function xFillAndSave(page, job) {
   let step = "wait_upload";
@@ -123,13 +123,14 @@ export async function xFillAndSave(page, job) {
 
     step = "thumbnail";
     let thumbUploaded = false;
-    if (job.x.cover16x9) {
+    const xCoverPath = job.x.coverPath || job.x.cover16x9 || null;
+    if (xCoverPath) {
       await page.click('button:has-text("更改缩略图")', { label: "open X thumbnail selector" });
       await page.waitForTimeout(1000);
       const chooserPromise = page.waitForFileChooser({ timeout: 10000 });
       await page.click('a:text-is("上传")', { label: "click X thumbnail upload link" });
       const chooser = await chooserPromise;
-      await chooser.setFiles(job.x.cover16x9);
+      await chooser.setFiles(xCoverPath);
       await page.waitForTimeout(4500);
       thumbUploaded = true;
     }
@@ -156,7 +157,7 @@ export async function xFillAndSave(page, job) {
 }
 
 /**
- * 阶段 2：通过 /1/library/get.json 核验标题、说明与 16:9 自定义缩略图，然后直达 /compose 撰写页留空交接。
+ * 阶段 2：通过 /1/library/get.json 核验标题、说明与同方向自定义缩略图，然后直达 /compose 撰写页留空交接。
  * 硬边界：绝不点击「帖子」发送按钮或「预排期帖子」。
  */
 export async function xVerifyAndCompose(page, job) {
@@ -171,6 +172,7 @@ export async function xVerifyAndCompose(page, job) {
       return makeFallback("locate_media", `当前 X 标签页未处于媒体详情或撰写页 (${curUrl})`, await collectLightDiagnostics(page));
     }
 
+    const xCoverPath = job.x.coverPath || job.x.cover16x9 || null;
     let apiVerify = null;
     const t0 = Date.now();
     while (Date.now() - t0 < 15000) {
@@ -201,7 +203,7 @@ export async function xVerifyAndCompose(page, job) {
           description: meta?.description ?? (text.match(/"description":"([^"]*)"/) || [])[1] ?? "",
         };
       }, mediaKey);
-      if (!job.x.cover16x9 || apiVerify.mediaThumb) break;
+      if (!xCoverPath || apiVerify.mediaThumb) break;
       await page.waitForTimeout(2000);
     }
 
@@ -211,8 +213,8 @@ export async function xVerifyAndCompose(page, job) {
     if (!job.x.description && apiVerify?.description) {
       issues.push(`说明默认应留空，实读非空: "${apiVerify.description}"`);
     }
-    if (job.x.cover16x9 && !apiVerify?.mediaThumb) {
-      issues.push("自定义 16:9 缩略图尚未生效为 pbs.twimg.com/media/...");
+    if (xCoverPath && !apiVerify?.mediaThumb) {
+      issues.push(`自定义 ${job.x.coverRatio || ""} 缩略图尚未生效为 pbs.twimg.com/media/...`);
     }
 
     step = "open_compose";

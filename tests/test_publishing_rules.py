@@ -175,6 +175,8 @@ console.log(JSON.stringify(out));
             self.assertEqual(payload['normalized']['wechat']['location'], '不显示位置')
             self.assertEqual(payload['normalized']['x']['description'], '')
             self.assertEqual(payload['normalized']['x']['tweetText'], '')
+            self.assertEqual(payload['normalized']['x']['coverRatio'], '3x4')
+            self.assertTrue(payload['normalized']['x']['coverPath'].endswith('cover-3x4.png'))
             self.assertFalse(payload['normalized']['allowActivities'])
 
             # Test platform-specific douyin.title override when original title exceeds 30 chars (but XHS <= 20)
@@ -221,6 +223,14 @@ console.log(JSON.stringify(out));
         skill = (ROOT / 'SKILL.md').read_text(encoding='utf-8')
         self.assertIn('原片优先', gotchas)
         self.assertIn('原片优先', skill)
+
+    def test_x_orientation_cover_rule(self):
+        for rel in ('SKILL.md', 'README.md', 'references/platforms.md', 'references/verification.md', 'references/gotchas.md'):
+            text = (ROOT / rel).read_text(encoding='utf-8')
+            with self.subTest(file=rel):
+                self.assertRegex(text, r'竖屏[^\n]*(?:9:16|3:4)')
+                self.assertRegex(text, r'横屏[^\n]*16:9')
+                self.assertNotIn('自定义 16:9 缩略图', text)
 
 
 if __name__ == '__main__':

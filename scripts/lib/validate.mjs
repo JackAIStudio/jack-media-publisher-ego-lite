@@ -205,7 +205,7 @@ export function validateAndNormalizeJob(rawJob, options = {}) {
   // 探测封面图
   const covers = {};
   const rawCovers = job.covers || {};
-  for (const key of ["3x4", "4x3", "16x9"]) {
+  for (const key of ["3x4", "4x3", "16x9", "9x16"]) {
     if (rawCovers[key]) {
       if (!fs.existsSync(rawCovers[key])) {
         errors.push(`封面 ${key} 文件不存在: ${rawCovers[key]}`);
@@ -259,8 +259,32 @@ export function validateAndNormalizeJob(rawJob, options = {}) {
       xVideoPath = path.resolve(job.x.videoPath);
     }
   }
-  if (platforms.includes("x") && !covers["16x9"] && !job.x?.cover16x9) {
-    warnings.push("未提供 16:9 封面，X（Media Studio）将保留平台默认抽帧缩略图。");
+
+  // 推导 X（Media Studio）默认封面比例（同微信视频号/小红书：竖屏 9:16 优先其次 3:4，横屏 16:9）
+  const xDefaultRatio =
+    orientation === "portrait"
+      ? (covers["9x16"] ? "9x16" : "3x4")
+      : (covers["16x9"] ? "16x9" : "4x3");
+  const xCoverRatio = job.x?.coverRatio || xDefaultRatio;
+  let xCoverPath = null;
+  if (job.x?.coverPath) {
+    if (!fs.existsSync(job.x.coverPath)) {
+      errors.push(`X 指定封面文件不存在: ${job.x.coverPath}`);
+    } else {
+      xCoverPath = path.resolve(job.x.coverPath);
+    }
+  } else if (job.x?.cover16x9 && orientation !== "portrait") {
+    if (!fs.existsSync(job.x.cover16x9)) {
+      errors.push(`X 指定 16:9 封面文件不存在: ${job.x.cover16x9}`);
+    } else {
+      xCoverPath = path.resolve(job.x.cover16x9);
+    }
+  } else if (covers[xCoverRatio]) {
+    xCoverPath = covers[xCoverRatio].path;
+  } else if (platforms.includes("x")) {
+    warnings.push(
+      `X（Media Studio）按成片方向（${orientation}）期望 ${xCoverRatio} 封面，但未提供；将保留平台默认抽帧缩略图（不强塞异方向封面）。`
+    );
   }
 
   if (platforms.includes("bilibili") && !job.bilibili?.category) {
@@ -337,7 +361,8 @@ export function validateAndNormalizeJob(rawJob, options = {}) {
       description: job.x?.description || "",
       tweetText: job.x?.tweetText || "",
       videoPath: xVideoPath,
-      cover16x9: job.x?.cover16x9 ? path.resolve(job.x.cover16x9) : (covers["16x9"]?.path || null),
+      coverRatio: xCoverRatio,
+      coverPath: xCoverPath,
     },
     warnings,
   };
