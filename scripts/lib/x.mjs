@@ -100,9 +100,35 @@ export async function xFillAndSave(page, job) {
     await page.waitForTimeout(2500);
     await muteAndPausePage(page);
 
-    const editUrl = await page.evaluate(() => location.href);
-    const mediaKeyMatch = editUrl.match(/\/library\/([^/?#]+)\/edit/);
-    const mediaKey = mediaKeyMatch?.[1] || null;
+    let editUrl = await page.evaluate(() => location.href);
+    let mediaKey = editUrl.match(/\/library\/([^/?#]+)\/edit/)?.[1] || null;
+
+    // 兜底：新上传视频在「缩略图不可用」阶段点击卡片可能不跳转，直接通过 /1/library/list.json 取最新 media_key 直达 /edit
+    if (!mediaKey) {
+      const latestKey = await page.evaluate(async () => {
+        const csrf = (document.cookie.match(/(?:^|;\s*)ct0=([^;]+)/) || [])[1] || "";
+        const uid = (document.cookie.match(/(?:^|;\s*)twid=u%3D(\d+)/) || [])[1] || "";
+        const res = await fetch(`/1/library/list.json?user_id=${uid}&count=5`, {
+          credentials: "include",
+          headers: {
+            "x-csrf-token": csrf,
+            "x-twitter-active-user": "yes",
+            "x-twitter-auth-type": "OAuth2Session",
+          },
+        });
+        if (!res.ok) return null;
+        const text = await res.text();
+        return (text.match(/"media_key":"([^"]+)"/) || [])[1] || null;
+      });
+      if (latestKey) {
+        await page.goto(`https://studio.x.com/library/${latestKey}/edit`, { timeout: 30000 });
+        await page.waitForTimeout(2500);
+        await muteAndPausePage(page);
+        editUrl = await page.evaluate(() => location.href);
+        mediaKey = editUrl.match(/\/library\/([^/?#]+)\/edit/)?.[1] || null;
+      }
+    }
+
     if (!mediaKey) {
       return makeFallback("open_detail", `点击媒体卡片后未进入 /library/<mediaKey>/edit (${editUrl})`, await collectLightDiagnostics(page));
     }
