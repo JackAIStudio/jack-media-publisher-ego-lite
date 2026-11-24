@@ -49,7 +49,7 @@ export async function bilibiliInspectAndInject(page, job) {
 }
 
 /**
- * 阶段 1b：填标题、选分区、清自动无关标签并加目标标签、设创作声明与自制授权、传 4:3+16:9 双封面（拒同步）、存草稿。
+ * 阶段 1b：填标题、选分区、清自动无关标签并加目标标签、设创作声明（仅含AI生成内容 vs 内容无需标注，默认不勾自制授权）、传 4:3+16:9 双封面（拒同步）、存草稿。
  */
 export async function bilibiliFillAndSave(page, job) {
   let step = "wait_editor";
@@ -135,49 +135,58 @@ export async function bilibiliFillAndSave(page, job) {
       await page.waitForTimeout(300);
     }
 
-    // 4. 创作声明 + 自制授权
+    // 4. 创作声明（极简二元：「含AI生成内容」或「内容无需标注」；默认不勾「内容为自制：未经作者允许，禁止转载」）
     step = "declarations";
     const targetDecl = job.aiGenerated ? "含AI生成内容" : "内容无需标注";
+    const wantAuth = job.bilibili?.authDeclaration === true;
     await page.evaluate(() =>
       document.querySelector("input.bcc-select-input-inner")?.scrollIntoView({ block: "center" })
     );
     await page.waitForTimeout(250);
-    await page.click("input.bcc-select-input-inner", { label: "open Bili creation declaration" });
-    await page.waitForTimeout(500);
+    const declStateBefore = await page.evaluate(() => {
+      const val = (document.querySelector("input.bcc-select-input-inner")?.value || "").trim();
+      const authSelected = !!document.querySelector(
+        ".auth-content .option-text-selected, .auth-content.option-text-selected"
+      );
+      return { val, authSelected };
+    });
 
-    const declClicked = await page.evaluate((target) => {
-      const opt = [...document.querySelectorAll(".bcc-option")].find((el) => (el.innerText || "").trim() === target);
-      if (opt) {
-        opt.click();
-        return true;
-      }
-      return false;
-    }, targetDecl);
-    if (!declClicked) throw new Error(`未在 B 站创作声明下拉中找到「${targetDecl}」`);
-    await page.waitForTimeout(400);
+    if (declStateBefore.val !== targetDecl || declStateBefore.authSelected !== wantAuth) {
+      await page.click("input.bcc-select-input-inner", { label: "open Bili creation declaration" });
+      await page.waitForTimeout(500);
 
-    if (job.original) {
-      const authVis = await page.evaluate(() => {
-        const a = document.querySelector(".auth-content");
-        return !!(a && a.getBoundingClientRect().height > 0);
-      });
-      if (!authVis) {
-        await page.click("input.bcc-select-input-inner", { label: "reopen Bili decl for auth" });
-        await page.waitForTimeout(400);
+      const declClicked = await page.evaluate((target) => {
+        const opt = [...document.querySelectorAll(".bcc-option")].find((el) => (el.innerText || "").trim() === target);
+        if (opt) {
+          opt.click();
+          return true;
+        }
+        return false;
+      }, targetDecl);
+      if (!declClicked) throw new Error(`未在 B 站创作声明下拉中找到「${targetDecl}」`);
+      await page.waitForTimeout(400);
+
+      // 默认不勾选「内容为自制：未经作者允许，禁止转载」；仅在显式要求时勾选，或在页面意外勾选时取消
+      const curAuthSelected = await page.evaluate(
+        () => !!document.querySelector(".auth-content .option-text-selected, .auth-content.option-text-selected")
+      );
+      if (curAuthSelected !== wantAuth) {
+        const authVis = await page.evaluate(() => {
+          const a = document.querySelector(".auth-content");
+          return !!(a && a.getBoundingClientRect().height > 0);
+        });
+        if (!authVis) {
+          await page.click("input.bcc-select-input-inner", { label: "reopen Bili decl for auth toggle" });
+          await page.waitForTimeout(400);
+        }
+        await page.evaluate(() => {
+          document.querySelector(".auth-content")?.click();
+        });
+        await page.waitForTimeout(350);
       }
-      await page.evaluate(() => {
-        const auth = document.querySelector(".auth-content");
-        if (!auth) return;
-        const already =
-          auth.className.includes("selected") ||
-          !!auth.querySelector(".option-text-selected") ||
-          (auth.parentElement?.className || "").includes("selected");
-        if (!already) auth.click();
-      });
-      await page.waitForTimeout(350);
+      await page.evaluate(() => document.body.click());
+      await page.waitForTimeout(300);
     }
-    await page.evaluate(() => document.body.click());
-    await page.waitForTimeout(300);
 
     // 5. 双封面：兼容空槽 (.cover-empty-pill) 与已抽帧更改封面入口，严格核对 parentElement active token
     step = "covers";
@@ -471,13 +480,22 @@ export async function bilibiliReopenAndVerify(page, job) {
 
     const issues = [];
     const expectedOpt = job.aiGenerated ? "含AI生成内容" : "内容无需标注";
+    const wantAuth = job.bilibili?.authDeclaration === true;
     if (!verified.uploadComplete) issues.push("未检测到「上传完成」信号");
     if (verified.title !== job.bilibili.title) issues.push(`标题不一致: "${verified.title}"`);
     if (verified.cat !== job.bilibili.category) issues.push(`分区不一致: 期望「${job.bilibili.category}」，实际「${verified.cat}」`);
-    if (verified.selectedOpt && verified.selectedOpt !== expectedOpt) {
-      issues.push(`创作声明不符: 期望「${expectedOpt}」，实际「${verified.selectedOpt}」`);
+    if (job.aiGenerated) {
+      if (verified.selectedOpt !== "含AI生成内容" && !verified.decl.includes("含AI生成内容")) {
+        issues.push(`创作声明不符: 期望「含AI生成内容」，实际「${verified.selectedOpt || verified.decl || "空"}」`);
+      }
+    } else if (verified.selectedOpt && verified.selectedOpt !== "内容无需标注") {
+      issues.push(`创作声明不符: 非 AI 作品期望「内容无需标注」或留空，实际「${verified.selectedOpt}」`);
     }
-    if (job.original && !verified.authSelected) issues.push("自制授权未勾选");
+    if (wantAuth && !verified.authSelected) {
+      issues.push("已显式要求勾选 B 站自制授权，但当前未勾选");
+    } else if (!wantAuth && verified.authSelected) {
+      issues.push("B 站创作声明无需勾选「内容为自制：未经作者允许，禁止转载」，但当前处于已勾选状态");
+    }
     if (!job.allowActivities && verified.linkedActivities?.length > 0) {
       issues.push(`存在未授权 B 站参与话题/活动: ${verified.linkedActivities.join("、")}`);
     }

@@ -60,7 +60,7 @@ B 站封面编辑器包含 **#editor_4_3（首页推荐）** 和 **#editor_16_9�
 1. **草稿丢标注**：实测点击视频号「保存草稿」并从草稿箱复开同一条稿时，短标题与描述在，但「视频标注」必定回退到占位符「选择视频标注」。因此必须走：**先保存草稿 → 另开标签进草稿箱复核 → 回到原编辑页最后设置「视频标注」→ 读回按钮确认后不再点保存、直接留页交接**。
 2. **`wujie-app` shadow root 与隐藏弹窗陷阱**：视频号发布表单嵌套在 `wujie-app` 的 shadow DOM 里，直接在顶级 `document` 运行 `querySelector` 往往只能读到外层导航栏。写 `page.evaluate()` 探测字段或 `File` realm 时需先进入 `document.querySelector('wujie-app')?.shadowRoot`。此外，页内常驻隐藏的 `.weui-desktop-dialog`（如「将此次编辑保留?」和隐藏「确定」按钮）：声明原创必须只取 `getBoundingClientRect().height > 80` 的可见弹窗；封面弹窗确认必须**严格匹配文本等于 `"确认"` 的可见橙色主按钮**（不可写成 `=== "确认" || === "确定"`）。
 3. **草稿箱直达路径与前台渲染**：草稿箱真实路径为 `https://channels.weixin.qq.com/platform/post/draftListManager`（不是 `/platform/post/draft`）；新开临时页查草稿箱前须 `bringToFront` 并用 `waitForFunction` 等 `wujie-app` 渲染出目标条目。
-4. **位置设「不显示位置」**：点击 `.post-position-wrap .location-name` 打开列表后，用 `page.click('text="不显示位置"')` 穿透 shadow DOM 直接选定最稳，随后回读 `.post-position-wrap` 确认不再显示城市名。
+4. **位置搜选「温州世贸大厦」等精确 POI**：点击 `.post-position-wrap .position-display` 后默认仅列出本机定位附近地点，需在 `.location-filter-wrap input[placeholder*="搜索附近位置"]` 输入关键词并点击 `.weui-desktop-search__btn`。搜索结果前排常出现同前缀商铺或停车场（如「十足便利店(温州世贸大厦店)」「温州世贸中心大厦地上停车场」），**必须严格按 `.option-item .name` 精确相等（如 `=== "温州世贸大厦"`）选中**，切勿模糊包含匹配，选后回读 `.post-position-wrap .location-name` 核验。若需隐藏定位则覆写为「不显示位置」直点首项。
 
 ---
 

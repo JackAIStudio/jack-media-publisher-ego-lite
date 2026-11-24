@@ -65,8 +65,8 @@ document.execCommand('insertText', false, '要填的内容'); // 清空用 'dele
 
 - **小红书**：读内容类型声明行 `.d-select` 显示文本（留空时显示占位符「添加内容类型声明」）；原创声明的原生 `<input type="checkbox">` 为 `0×0`，**必须精准点击 `.original-wrapper .d-switch`**（不要宽泛点 `.custom-switch-card .d-switch`，该选择器同时命中「定时发布」），并在《原创声明须知》弹窗中勾选 `.originalContainer .d-checkbox-simulator` 后点「声明原创」。底部「暂存离开」位于 `<xhs-publish-btn>` 内，直接用 `page.click('text="暂存离开"')` 可自动穿透 shadow DOM。
 - **抖音**：点击自主声明并确认弹窗后，回读表单上 `.selectBox-buZRzi` 的文本；原创若「无此项」据实记录。
-- **B站**：打开「创作声明」在六个 `.bcc-option` 中直接 DOM 精准点击目标项（如「含AI生成内容」或「内容无需标注」），收起后回读该行 `input.bcc-select-input-inner` 与 `.bcc-option.selected`；下方「是否添加内容授权声明（非必选）」内 `.auth-content`（「内容为自制：未经作者允许，禁止转载」）就在同一 `.bcc-select-option-list` 下拉内，实测可与「含AI生成内容」或「内容无需标注」同时勾存（选中后含 `.option-text-selected`）。
-- **微信视频号**：收起候选菜单后读取「视频标注」按钮文本（「含AI生成内容」「无需标注」或占位符「选择视频标注」），并核对「声明原创」（`.declare-original-checkbox` + 仅过滤 `height > 80` 的可见 `.declare-original-dialog, .weui-desktop-dialog` 确认弹窗）与「位置」（点击 `.post-position-wrap .location-name` 后直接 `page.click('text="不显示位置"')`）。草稿箱列表直达路径为 `https://channels.weixin.qq.com/platform/post/draftListManager`（需 `waitForFunction` 等 `wujie-app` 渲染）。详情见 [草稿复查与交接](<verification.md#草稿复查与交接>)。
+- **B站**：打开「创作声明」在六个 `.bcc-option` 中直接 DOM 精准点击目标项（「含AI生成内容」或「内容无需标注」，不选「个人观点，仅供参考」等其他项），收起后回读该行 `input.bcc-select-input-inner` 与 `.bcc-option.selected`；下方「是否添加内容授权声明（非必选）」内 `.auth-content`（「内容为自制：未经作者允许，禁止转载」）**默认不勾选**（仅在显式指定 `authDeclaration: true` 时才勾）。
+- **微信视频号**：收起候选菜单后读取「视频标注」按钮文本（「含AI生成内容」「无需标注」或占位符「选择视频标注」），并核对「声明原创」（`.declare-original-checkbox` + 仅过滤 `height > 80` 的可见 `.declare-original-dialog, .weui-desktop-dialog` 确认弹窗）与「位置」（点击 `.post-position-wrap .position-display` 打开 `.location-filter-wrap`；默认目标「温州世贸大厦」等具体地标时，在 `input[placeholder*="搜索附近位置"]` 输入地标并点 `.weui-desktop-search__btn`，按 `.option-item .name` **严格精确匹配**点击，切勿模糊命中同前缀商铺/停车场，随后回读 `.post-position-wrap .location-name`；若覆写为「不显示位置」则直接点击首项「不显示位置」）。草稿箱列表直达路径为 `https://channels.weixin.qq.com/platform/post/draftListManager`（需 `waitForFunction` 等 `wujie-app` 渲染）。详情见 [草稿复查与交接](<verification.md#草稿复查与交接>)。
 
 ---
 

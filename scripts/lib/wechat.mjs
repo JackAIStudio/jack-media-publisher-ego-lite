@@ -5,6 +5,7 @@ import {
   makeHandoff,
   muteAndPausePage,
 } from "./utils.mjs";
+import { DEFAULT_WECHAT_LOCATION } from "./validate.mjs";
 
 export const WECHAT_URL = "https://channels.weixin.qq.com/platform/post/create";
 export const WECHAT_DRAFT_LIST_URL = "https://channels.weixin.qq.com/platform/post/draftListManager";
@@ -50,7 +51,7 @@ export async function wechatInspectAndInject(page, job) {
 }
 
 /**
- * 阶段 1b：等上传转码解锁 -> 填描述/短标题/不显示位置/原创 -> 按页面实际卡片传封面 -> 保存草稿（视频标注留到 Pass 2）。
+ * 阶段 1b：等上传转码解锁 -> 填描述/短标题/位置（默认「温州世贸大厦」）/原创 -> 按页面实际卡片传封面 -> 保存草稿（视频标注留到 Pass 2）。
  */
 export async function wechatFillAndSave(page, job) {
   let step = "wait_unlock";
@@ -98,34 +99,123 @@ export async function wechatFillAndSave(page, job) {
       await page.fill(shortSel, job.wechat.shortTitle).catch(() => {});
     }
 
-    // 2. 位置（默认设为「不显示位置」）
+    // 2. 位置（默认设为「温州世贸大厦」；支持「不显示位置」、城市名或任意 POI 关键词搜索并精确选中）
     step = "location";
-    const targetLoc = job.wechat.location || "不显示位置";
-    await page.evaluate(() => {
+    const targetLoc = job.wechat.location || DEFAULT_WECHAT_LOCATION;
+    const searchLocQuery = job.wechat.locationQuery || targetLoc;
+    const currentLoc = await page.evaluate(() => {
       const root = document.querySelector("wujie-app")?.shadowRoot || document;
       root.querySelector(".post-position-wrap")?.scrollIntoView({ block: "center" });
+      return (root.querySelector(".post-position-wrap .location-name")?.innerText || "").trim();
     });
     await page.waitForTimeout(250);
-    await page.click(".post-position-wrap .location-name", { label: "open WeChat location" }).catch(async () => {
-      await page.click(".post-position-wrap", { label: "open WeChat location wrap" });
-    });
-    await page.waitForTimeout(650);
-    try {
-      await page.click(`text="${targetLoc}"`, { label: `select WeChat ${targetLoc}`, timeout: 4000 });
-    } catch {
-      await page.evaluate((loc) => {
-        const root = document.querySelector("wujie-app")?.shadowRoot || document;
-        const all = [...root.querySelectorAll("*")].filter(
-          (el) => (el.innerText || "").trim() === loc && el.getBoundingClientRect().height > 0
-        );
-        const target = all[all.length - 1];
-        if (target) {
-          target.click();
-          target.parentElement?.click();
+
+    if (currentLoc !== targetLoc) {
+      await page.click(".post-position-wrap .position-display", { label: "open WeChat location" }).catch(async () => {
+        await page.click(".post-position-wrap .location-name", { label: "open WeChat location name" }).catch(async () => {
+          await page.click(".post-position-wrap", { label: "open WeChat location wrap" });
+        });
+      });
+      await page.waitForTimeout(650);
+
+      if (targetLoc === "不显示位置") {
+        try {
+          await page.click('text="不显示位置"', { label: "select WeChat 不显示位置", timeout: 4000 });
+        } catch {
+          await page.evaluate(() => {
+            const root = document.querySelector("wujie-app")?.shadowRoot || document;
+            const item = [...root.querySelectorAll(".location-filter-wrap .option-item")].find(
+              (el) => (el.querySelector(".name")?.innerText || el.innerText || "").trim() === "不显示位置"
+            );
+            item?.click();
+          });
         }
-      }, targetLoc);
+      } else {
+        // 先检查默认列表是否已含精确项；若无则走「搜索附近位置」输入框查询
+        const alreadyInInitialList = await page.evaluate((loc) => {
+          const root = document.querySelector("wujie-app")?.shadowRoot || document;
+          return [...root.querySelectorAll(".location-filter-wrap .option-item")].some(
+            (el) =>
+              el.getBoundingClientRect().height > 0 &&
+              (el.querySelector(".name")?.innerText || "").trim() === loc
+          );
+        }, targetLoc);
+
+        if (!alreadyInInitialList) {
+          const searchSel = '.location-filter-wrap input[placeholder*="搜索附近位置"]';
+          await page.fill(searchSel, searchLocQuery);
+          await page.waitForTimeout(250);
+          await page.click(".location-filter-wrap .weui-desktop-search__btn", {
+            label: `search WeChat POI ${searchLocQuery}`,
+          }).catch(async () => {
+            await page.keyboard.press("Enter");
+          });
+          await page
+            .waitForFunction(
+              (loc) => {
+                const root = document.querySelector("wujie-app")?.shadowRoot || document;
+                return [...root.querySelectorAll(".location-filter-wrap .option-item")].some(
+                  (el) =>
+                    el.getBoundingClientRect().height > 0 &&
+                    (el.querySelector(".name")?.innerText || "").trim() === loc
+                );
+              },
+              targetLoc,
+              { timeout: 8000 }
+            )
+            .catch(() => {});
+          await page.waitForTimeout(400);
+        }
+
+        // 严格按 .option-item .name 精确匹配点击，防止误点同前缀商铺或停车场
+        const picked = await page.evaluate((loc) => {
+          const root = document.querySelector("wujie-app")?.shadowRoot || document;
+          const items = [...root.querySelectorAll(".location-filter-wrap .option-item")].filter(
+            (el) => el.getBoundingClientRect().height > 0
+          );
+          const exact = items.find((el) => (el.querySelector(".name")?.innerText || "").trim() === loc);
+          if (exact) {
+            exact.scrollIntoView({ block: "nearest" });
+            const r = exact.getBoundingClientRect();
+            return {
+              found: true,
+              name: (exact.querySelector(".name")?.innerText || "").trim(),
+              x: Math.round(r.left + Math.min(80, r.width / 2)),
+              y: Math.round(r.top + r.height / 2),
+            };
+          }
+          return {
+            found: false,
+            candidates: items.slice(0, 8).map((el) => (el.querySelector(".name")?.innerText || "").trim()),
+          };
+        }, targetLoc);
+
+        if (!picked.found) {
+          throw new Error(
+            `微信视频号位置搜索「${searchLocQuery}」未找到精确匹配「${targetLoc}」的 POI（候选前 8 项: ${(picked.candidates || []).join("、") || "空"}）`
+          );
+        }
+        await page.mouse.click(picked.x, picked.y, { label: `select WeChat POI ${targetLoc}` });
+        await page.waitForTimeout(600);
+      }
+
+      // 回读确认并确保下拉面板已收起
+      const locCheck = await page.evaluate(() => {
+        const root = document.querySelector("wujie-app")?.shadowRoot || document;
+        const wrap = root.querySelector(".location-filter-wrap");
+        const displayed = (root.querySelector(".post-position-wrap .location-name")?.innerText || "").trim();
+        const stillOpen = !!wrap && getComputedStyle(wrap).display !== "none";
+        return { displayed, stillOpen };
+      });
+      if (locCheck.stillOpen) {
+        await page.click(".post-position-wrap .position-display", { label: "close WeChat location dropdown" }).catch(() => {});
+        await page.waitForTimeout(300);
+      }
+      if (!locCheck.displayed.includes(targetLoc)) {
+        throw new Error(`微信视频号位置设置未生效：期望「${targetLoc}」，当前显示「${locCheck.displayed}」`);
+      }
     }
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(350);
 
     // 3. 声明原创（只查 height > 80 的可见弹窗，防止命中隐藏「保留编辑」dialog）
     step = "original";
@@ -538,8 +628,9 @@ export async function wechatVerifyAndLabel(task, origPage, job) {
 
     const issues = [];
     if (!listMatch.found) issues.push("草稿箱列表未查到本条草稿");
-    if (!origPageFinal.pos.includes(job.wechat.location || "不显示位置")) {
-      issues.push(`位置不符: 期望「${job.wechat.location}」，实际「${origPageFinal.pos}」`);
+    const expectedLoc = job.wechat.location || DEFAULT_WECHAT_LOCATION;
+    if (!origPageFinal.pos.includes(expectedLoc)) {
+      issues.push(`位置不符: 期望「${expectedLoc}」，实际「${origPageFinal.pos}」`);
     }
     if (job.original && !origPageFinal.orig) issues.push("原创声明未勾选");
     if (!job.allowActivities && origPageFinal.linkedActivities?.length > 0) {

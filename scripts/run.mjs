@@ -122,7 +122,8 @@ console.log("__JACK_PUBLISHER_START__" + JSON.stringify(result) + "__JACK_PUBLIS
     rawJob.platforms = args.platforms;
   }
 
-  const normalized = validateAndNormalizeJob(rawJob);
+  const skipFrameAudit = !args.dryRun && (args.stage === "pass2" || args.stage === "finish");
+  const normalized = validateAndNormalizeJob(rawJob, { skipFrameAudit });
 
   if (args.dryRun) {
     console.log(
@@ -203,6 +204,7 @@ main().catch((err) => {
         status: "validation_or_runner_error",
         message: err.message,
         validationErrors: err.validationErrors || undefined,
+        activeViewport: err.activeViewport || undefined,
       },
       null,
       2

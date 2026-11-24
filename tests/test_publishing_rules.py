@@ -172,7 +172,8 @@ console.log(JSON.stringify(out));
             self.assertTrue(payload['dryRun'])
             self.assertEqual(payload['normalized']['platforms'], ['xhs', 'douyin', 'bilibili', 'wechat', 'x'])
             self.assertEqual(payload['normalized']['xhs']['coverRatio'], '3x4')
-            self.assertEqual(payload['normalized']['wechat']['location'], '不显示位置')
+            self.assertEqual(payload['normalized']['wechat']['location'], '温州世贸大厦')
+            self.assertFalse(payload['normalized']['bilibili']['authDeclaration'])
             self.assertEqual(payload['normalized']['x']['description'], '')
             self.assertEqual(payload['normalized']['x']['tweetText'], '')
             self.assertEqual(payload['normalized']['x']['coverRatio'], '3x4')
@@ -211,6 +212,69 @@ console.log(JSON.stringify(out));
             self.assertEqual(p2['titleMetrics']['xhsWeight'], 20)
             self.assertEqual(p2['titleMetrics']['dyLen'], 34)
             self.assertTrue(p2['xhs']['videoPath'].endswith('clip.mp4'))
+
+    def test_black_bar_orientation_mismatch_gate(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            pillarbox = tmp / 'pillarbox_16x9.mp4'
+            letterbox = tmp / 'letterbox_9x16.mp4'
+
+            # 1) 16:9 横屏容器里塞 9:16 竖屏内容 + 左右纯黑边（模拟达芬奇竖屏误放横屏时间线）
+            subprocess.run(
+                [
+                    'ffmpeg', '-y', '-v', 'error',
+                    '-f', 'lavfi', '-i', 'testsrc2=size=202x360:rate=15:duration=2',
+                    '-vf', 'pad=640:360:(ow-iw)/2:0:black',
+                    '-pix_fmt', 'yuv420p', str(pillarbox),
+                ],
+                check=True,
+            )
+            # 2) 9:16 竖屏容器里塞 16:9 横屏内容 + 上下纯黑边（反向错导）
+            subprocess.run(
+                [
+                    'ffmpeg', '-y', '-v', 'error',
+                    '-f', 'lavfi', '-i', 'testsrc2=size=360x202:rate=15:duration=2',
+                    '-vf', 'pad=360:640:0:(oh-ih)/2:black',
+                    '-pix_fmt', 'yuv420p', str(letterbox),
+                ],
+                check=True,
+            )
+
+            base_job = {
+                'title': '黑边熔断测试',
+                'covers': {'3x4': str(ROOT / 'fixtures/cover-3x4.png')},
+                'topics': ['AI'],
+                'original': True,
+                'aiGenerated': False,
+                'bilibili': {'category': '人工智能'},
+            }
+
+            # 验证 pillarbox 默认被硬阻断
+            job1 = tmp / 'job1.json'
+            job1.write_text(json.dumps({**base_job, 'video': str(pillarbox)}, ensure_ascii=False), encoding='utf-8')
+            r1 = subprocess.run(['node', str(ROOT / 'scripts/run.mjs'), '--job', str(job1), '--dry-run'], capture_output=True, text=True)
+            self.assertNotEqual(r1.returncode, 0, f'Expected pillarbox video to be blocked: {r1.stdout}')
+            err1 = json.loads(r1.stderr)
+            self.assertEqual(err1['activeViewport']['mismatchType'], 'pillarbox_portrait_in_landscape')
+
+            # 验证显式 allowBlackBars=true 可放行并记入 warnings
+            job1_allow = tmp / 'job1_allow.json'
+            job1_allow.write_text(
+                json.dumps({**base_job, 'video': str(pillarbox), 'allowBlackBars': True}, ensure_ascii=False),
+                encoding='utf-8',
+            )
+            r1_ok = subprocess.run(['node', str(ROOT / 'scripts/run.mjs'), '--job', str(job1_allow), '--dry-run'], capture_output=True, text=True)
+            self.assertEqual(r1_ok.returncode, 0, f'Expected allowBlackBars=true to pass: {r1_ok.stderr}')
+            p1_ok = json.loads(r1_ok.stdout)['normalized']
+            self.assertTrue(any('allowBlackBars=true' in w for w in p1_ok['warnings']))
+
+            # 验证反向 letterbox 同样被硬阻断
+            job2 = tmp / 'job2.json'
+            job2.write_text(json.dumps({**base_job, 'video': str(letterbox)}, ensure_ascii=False), encoding='utf-8')
+            r2 = subprocess.run(['node', str(ROOT / 'scripts/run.mjs'), '--job', str(job2), '--dry-run'], capture_output=True, text=True)
+            self.assertNotEqual(r2.returncode, 0, f'Expected letterbox video to be blocked: {r2.stdout}')
+            err2 = json.loads(r2.stderr)
+            self.assertEqual(err2['activeViewport']['mismatchType'], 'letterbox_landscape_in_portrait')
 
     def test_five_platforms_equal_and_xhs_original_first(self):
         for rel in ('SKILL.md', 'README.md', 'references/platforms.md'):

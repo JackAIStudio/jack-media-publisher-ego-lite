@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -84,6 +84,147 @@ export function probeVideo(videoPath) {
 }
 
 /**
+ * 多点快速抽帧探测成片有效画幅（Active Viewport / 黑边错配检测）。
+ * - 统一经 format=yuv420p 转 8-bit，避免达芬奇 10-bit HEVC (TV range 黑电平=64) 导致 cropdetect=limit=24 失效；
+ * - 对多帧有效框取并集（Union Box），防止单帧暗部/黑衣服误裁或正常视频中偶发竖屏插片误报；
+ * - 双向覆盖「竖屏误导成横屏时间线 (pillarbox)」与「横屏误导成竖屏时间线 (letterbox)」。
+ */
+export function probeVideoActiveViewport(videoPath, videoMeta) {
+  const w = Number(videoMeta?.width || 0);
+  const h = Number(videoMeta?.height || 0);
+  const dur = Number(videoMeta?.durationSec || 0);
+  const containerOrientation = videoMeta?.orientation || (h > w ? "portrait" : w > h ? "landscape" : "square");
+  if (w <= 0 || h <= 0) {
+    return { status: "skipped", reason: "invalid_dimensions" };
+  }
+
+  const fracs = dur >= 1.5 ? [0.12, 0.30, 0.50, 0.70, 0.88] : [0.5];
+  const boxes = [];
+  const t0 = Date.now();
+
+  for (const frac of fracs) {
+    const ts = dur > 0.2 ? Math.max(0.05, Math.min(dur - 0.05, dur * frac)) : 0;
+    const proc = spawnSync(
+      "ffmpeg",
+      [
+        "-hide_banner",
+        "-v",
+        "info",
+        "-ss",
+        ts.toFixed(2),
+        "-i",
+        videoPath,
+        "-frames:v",
+        "1",
+        "-vf",
+        "format=yuv420p,cropdetect=limit=24:round=2:reset=0:skip=0",
+        "-f",
+        "null",
+        "-",
+      ],
+      { encoding: "utf-8", timeout: 8000 }
+    );
+    if (proc.error) {
+      return { status: "skipped", reason: `ffmpeg_unavailable: ${proc.error.message}`, elapsedMs: Date.now() - t0 };
+    }
+    const matches = [...(proc.stderr || "").matchAll(/x1:(\d+)\s+x2:(\d+)\s+y1:(\d+)\s+y2:(\d+)\s+w:(\d+)\s+h:(\d+)/g)];
+    if (!matches.length) continue;
+    const last = matches[matches.length - 1];
+    const [x1, x2, y1, y2, cw, ch] = last.slice(1).map(Number);
+    if (cw <= 0 || ch <= 0) continue;
+    if (cw * ch < w * h * 0.04) continue; // 忽略纯黑转场帧
+    boxes.push({ ts: Number(ts.toFixed(2)), x1, x2, y1, y2, cw, ch });
+  }
+
+  const elapsedMs = Date.now() - t0;
+  if (!boxes.length) {
+    return { status: "skipped", reason: "no_non_black_frames", samplesCount: 0, elapsedMs };
+  }
+
+  const ux1 = Math.min(...boxes.map((b) => b.x1));
+  const ux2 = Math.max(...boxes.map((b) => b.x2));
+  const uy1 = Math.min(...boxes.map((b) => b.y1));
+  const uy2 = Math.max(...boxes.map((b) => b.y2));
+  const uw = Math.min(w, ux2 - ux1 + 1);
+  const uh = Math.min(h, uy2 - uy1 + 1);
+
+  const activeOrientation = uh > uw ? "portrait" : uw > uh ? "landscape" : "square";
+  const fillWidthPct = Number(((uw / w) * 100).toFixed(1));
+  const fillHeightPct = Number(((uh / h) * 100).toFixed(1));
+  const leftBarPct = Number(((ux1 / w) * 100).toFixed(1));
+  const rightBarPct = Number((((w - 1 - ux2) / w) * 100).toFixed(1));
+  const topBarPct = Number(((uy1 / h) * 100).toFixed(1));
+  const bottomBarPct = Number((((h - 1 - uy2) / h) * 100).toFixed(1));
+
+  const isPillarboxMismatch =
+    containerOrientation === "landscape" &&
+    activeOrientation === "portrait" &&
+    fillWidthPct < 75 &&
+    leftBarPct >= 12 &&
+    rightBarPct >= 12;
+
+  const isLetterboxMismatch =
+    containerOrientation === "portrait" &&
+    activeOrientation === "landscape" &&
+    fillHeightPct < 75 &&
+    topBarPct >= 12 &&
+    bottomBarPct >= 12;
+
+  // 检查是否存在“片头/片尾全屏撑大并集，但主体 ≥80% 帧仍为异向大黑边”的情况
+  let frameMismatchCount = 0;
+  for (const b of boxes) {
+    const fOrient = b.ch > b.cw ? "portrait" : b.cw > b.ch ? "landscape" : "square";
+    const fFillW = (b.cw / w) * 100;
+    const fFillH = (b.ch / h) * 100;
+    const fLeft = (b.x1 / w) * 100;
+    const fRight = ((w - 1 - b.x2) / w) * 100;
+    const fTop = (b.y1 / h) * 100;
+    const fBottom = ((h - 1 - b.y2) / h) * 100;
+    if (
+      (containerOrientation === "landscape" && fOrient === "portrait" && fFillW < 75 && fLeft >= 12 && fRight >= 12) ||
+      (containerOrientation === "portrait" && fOrient === "landscape" && fFillH < 75 && fTop >= 12 && fBottom >= 12)
+    ) {
+      frameMismatchCount += 1;
+    }
+  }
+
+  let status = "ok";
+  let mismatchType = null;
+  if (isPillarboxMismatch) {
+    status = "mismatch_error";
+    mismatchType = "pillarbox_portrait_in_landscape";
+  } else if (isLetterboxMismatch) {
+    status = "mismatch_error";
+    mismatchType = "letterbox_landscape_in_portrait";
+  } else if (boxes.length >= 3 && frameMismatchCount / boxes.length >= 0.8) {
+    status = "warning";
+    mismatchType = "majority_frames_orientation_mismatch";
+  } else if (
+    (fillWidthPct < 75 && leftBarPct >= 12 && rightBarPct >= 12) ||
+    (fillHeightPct < 70 && topBarPct >= 15 && bottomBarPct >= 15)
+  ) {
+    status = "warning";
+    mismatchType = "heavy_symmetric_black_bars";
+  }
+
+  return {
+    status,
+    mismatchType,
+    containerOrientation,
+    activeOrientation,
+    activeWidth: uw,
+    activeHeight: uh,
+    activeRatio: uh > 0 ? Number((uw / uh).toFixed(3)) : 0,
+    fillWidthPct,
+    fillHeightPct,
+    barsPct: { left: leftBarPct, right: rightBarPct, top: topBarPct, bottom: bottomBarPct },
+    samplesCount: boxes.length,
+    frameMismatchCount,
+    elapsedMs,
+  };
+}
+
+/**
  * 探测图片真实像素尺寸（macOS sips 或 ffprobe 兜底）。
  */
 export function probeImage(imgPath) {
@@ -116,6 +257,7 @@ export function probeImage(imgPath) {
 }
 
 const VALID_PLATFORMS = ["xhs", "douyin", "bilibili", "wechat", "x"];
+export const DEFAULT_WECHAT_LOCATION = "温州世贸大厦";
 
 /**
  * 校验并标准化任务配置，返回含探测元数据与默认推导结果的 normalizedJob。
@@ -182,15 +324,40 @@ export function validateAndNormalizeJob(rawJob, options = {}) {
 
   const original = job.original !== false; // 默认本人自制原创，可显式设为 false
   const allowActivities = job.allowActivities === true; // 全平台红线：默认绝不关联任何活动，仅当用户明确提起并显式开启时才允许
+  const allowBlackBars = job.allowBlackBars === true; // 仅在作者明确确认有意留黑边/异向套框时放行
 
-  // 探测成片
+  // 探测成片（含有效画幅黑边错配检测；pass2/finish 可传 skipFrameAudit 跳过以实现零额外耗时）
   let videoMeta = null;
+  let activeViewport = null;
   if (!job.video) {
     errors.push("缺少必填字段 video（本地成片绝对路径）。");
   } else if (!fs.existsSync(job.video)) {
     errors.push(`本地成片不存在: ${job.video}`);
   } else if (!options.skipProbe) {
     videoMeta = probeVideo(job.video);
+    if (!options.skipFrameAudit) {
+      activeViewport = probeVideoActiveViewport(job.video, videoMeta);
+      videoMeta.activeViewport = activeViewport;
+      if (activeViewport.status === "mismatch_error") {
+        const desc =
+          activeViewport.mismatchType === "pillarbox_portrait_in_landscape"
+            ? `疑似「竖屏素材误导成横屏时间线」（左右黑边左 ${activeViewport.barsPct.left}% / 右 ${activeViewport.barsPct.right}%，有效宽仅占 ${activeViewport.fillWidthPct}%）`
+            : `疑似「横屏素材误导成竖屏时间线」（上下黑边上 ${activeViewport.barsPct.top}% / 下 ${activeViewport.barsPct.bottom}%，有效高仅占 ${activeViewport.fillHeightPct}%）`;
+        const msg =
+          `成片有效画幅方向与容器冲突：${desc}。容器 ${videoMeta.width}×${videoMeta.height}（${videoMeta.orientation}），` +
+          `5 帧并集有效画面 ${activeViewport.activeWidth}×${activeViewport.activeHeight}（${activeViewport.activeOrientation}）。` +
+          `请先核对达芬奇/剪辑软件时间线分辨率并重新导出；若作者明确确认就是要带黑边发此版，请在 job.json 显式写入 "allowBlackBars": true 放行。`;
+        if (allowBlackBars) {
+          warnings.push(`[已授权 allowBlackBars=true 放行] ${msg}`);
+        } else {
+          errors.push(msg);
+        }
+      } else if (activeViewport.status === "warning") {
+        warnings.push(
+          `成片存在较明显对称黑边或主体帧方向异常（${activeViewport.mismatchType}）：容器 ${videoMeta.width}×${videoMeta.height}，有效画面 ${activeViewport.activeWidth}×${activeViewport.activeHeight}（宽占比 ${activeViewport.fillWidthPct}% / 高占比 ${activeViewport.fillHeightPct}%），建议发车前确认。`
+        );
+      }
+    }
   } else {
     videoMeta = {
       path: path.resolve(job.video),
@@ -294,6 +461,7 @@ export function validateAndNormalizeJob(rawJob, options = {}) {
   if (errors.length) {
     const err = new Error("任务配置校验未通过:\n- " + errors.join("\n- "));
     err.validationErrors = errors;
+    if (activeViewport) err.activeViewport = activeViewport;
     throw err;
   }
 
@@ -323,6 +491,7 @@ export function validateAndNormalizeJob(rawJob, options = {}) {
     original,
     aiGenerated: job.aiGenerated,
     allowActivities,
+    allowBlackBars,
     topics: baseTopics,
     xhs: {
       title: job.xhs?.title || title,
@@ -345,6 +514,7 @@ export function validateAndNormalizeJob(rawJob, options = {}) {
       category: job.bilibili?.category || "人工智能",
       tags: biliTags.slice(0, 10),
       description: job.bilibili?.description ?? baseDescription,
+      authDeclaration: job.bilibili?.authDeclaration === true, // 默认不勾选「内容为自制：未经作者允许，禁止转载」
       cover4x3: covers["4x3"]?.path || null,
       cover16x9: covers["16x9"]?.path || null,
     },
@@ -352,7 +522,8 @@ export function validateAndNormalizeJob(rawJob, options = {}) {
       topics: job.wechat?.topics || baseTopics.slice(0, 5),
       description: job.wechat?.description || defaultWechatDesc,
       shortTitle,
-      location: job.wechat?.location || "不显示位置",
+      location: job.wechat?.location || DEFAULT_WECHAT_LOCATION,
+      locationQuery: job.wechat?.locationQuery || job.wechat?.location || DEFAULT_WECHAT_LOCATION,
       cover3x4: covers["3x4"]?.path || null,
       cover4x3: covers["4x3"]?.path || null,
     },
