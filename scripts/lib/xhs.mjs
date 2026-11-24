@@ -370,6 +370,65 @@ export async function xhsFillAndSave(page, job) {
       await page.waitForTimeout(450);
     }
 
+    // 4.5 可选地点（仅当作者显式确认并传入 job.xhs.location 时填写，绝不写死默认值）
+    step = "location";
+    let locationLog = { skipped: true, target: "", selected: "" };
+    if (job.xhs.location && job.xhs.location !== "不显示位置") {
+      const targetLoc = job.xhs.location;
+      const queryLoc = job.xhs.locationQuery || targetLoc;
+      await page.evaluate(() => {
+        const el = [...document.querySelectorAll("div, span, input")].find(
+          (n) => (n.innerText || n.placeholder || "").trim() === "添加地点" && n.getBoundingClientRect().height > 8
+        );
+        el?.scrollIntoView({ block: "center", behavior: "instant" });
+      });
+      await page.waitForTimeout(300);
+      await page.click('text="添加地点"', { label: "focus XHS location picker", timeout: 6000 });
+      await page.waitForTimeout(550);
+      await page.keyboard.type(queryLoc, { delay: 65 });
+      await page.waitForTimeout(1800);
+
+      const picked = await page.evaluate((target) => {
+        const isSubPoi = (t) => /(停车场|接送点|招商办公室|便利店|银泰百货|[A-Z]栋|\(.*(?:店|门|出口)\)|（.*(?:店|门|出口)）)/.test(t);
+        const chars = [...target.replace(/\s+/g, "")];
+        const isSubseq = (hay) => {
+          let i = 0;
+          for (const ch of hay) if (i < chars.length && ch === chars[i]) i++;
+          return i === chars.length;
+        };
+        const els = [...document.querySelectorAll('.d-popover li, .d-dropdown li, [class*="poi"], [class*="location"] [class*="item"], [role="option"], .d-select-dropdown div, div')]
+          .filter((el) => {
+            const r = el.getBoundingClientRect();
+            const t = (el.innerText || "").trim();
+            if (r.width < 80 || r.height < 18 || r.height > 95) return false;
+            if (!t || t.length > 80 || t.includes("\n")) return false;
+            if (/^(添加地点|标记地点或标记朋友)$/.test(t)) return false;
+            return t.includes(target) || isSubseq(t);
+          });
+        const leaf = els.filter((el) => !els.some((o) => o !== el && el.contains(o)));
+        const scored = leaf.map((el) => {
+          const name = (el.innerText || "").trim();
+          const r = el.getBoundingClientRect();
+          let score = 0;
+          if (name === target) score += 100;
+          else if (name.startsWith(target)) score += 60;
+          else if (isSubseq(name)) score += 45;
+          if (!isSubPoi(name)) score += 30;
+          score -= Math.min(20, Math.abs(name.length - target.length));
+          return { name, score, x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+        });
+        scored.sort((a, b) => b.score - a.score);
+        return { best: scored[0] || null, candidates: scored.slice(0, 6).map((s) => s.name) };
+      }, targetLoc);
+
+      if (!picked.best) {
+        throw new Error(`小红书地点搜索「${queryLoc}」未找到匹配「${targetLoc}」的 POI 候选`);
+      }
+      await page.mouse.click(picked.best.x, picked.best.y, { label: "select XHS location POI" });
+      await page.waitForTimeout(800);
+      locationLog = { skipped: false, target: targetLoc, query: queryLoc, selected: picked.best.name, candidates: picked.candidates };
+    }
+
     // 5. 封面（竖屏默认 3:4；横屏 4:3 上传后必须切到左侧「裁剪 -> 4:3」）
     step = "cover";
     let coverResult = "skipped_no_cover_provided";
@@ -513,7 +572,7 @@ export async function xhsFillAndSave(page, job) {
       });
     }
 
-    return { status: "ok", topicLogs, coverResult, unlinkedActivities, afterSave };
+    return { status: "ok", topicLogs, locationLog, coverResult, unlinkedActivities, afterSave };
   } catch (err) {
     return makeFallback(step, err, await collectLightDiagnostics(page));
   }
@@ -622,11 +681,14 @@ export async function xhsReopenAndVerify(page, job) {
           })(),
         }));
       const txt = (document.body?.innerText || "").replace(/\s+/g, " ");
+      const locDisplay = decl[1] || "";
+      const selectedLocation = locDisplay && locDisplay !== "添加地点" && !locDisplay.includes("选择群聊") ? locDisplay : "";
       return {
-        url: location.href,
+        url: window.location.href,
         title,
         count,
         topics,
+        location: selectedLocation,
         switches,
         decl,
         hasEvalPass: txt.includes("封面效果评估通过"),
@@ -644,6 +706,9 @@ export async function xhsReopenAndVerify(page, job) {
     if (verified.title !== job.xhs.title) issues.push(`标题不一致: "${verified.title}"`);
     if (verified.topics.length < job.xhs.topics.length) {
       issues.push(`话题实体数量不足: 实得 ${verified.topics.length}/${job.xhs.topics.length}`);
+    }
+    if (job.xhs.location && job.xhs.location !== "不显示位置" && !verified.location) {
+      issues.push(`小红书地点未生效: 期望包含「${job.xhs.location}」，当前仍为「添加地点」`);
     }
     if (!job.allowActivities && verified.linkedActivities.length > 0) {
       issues.push(`存在未授权关联活动: ${verified.linkedActivities.join("、")}，必须点击「取消关联」解除`);

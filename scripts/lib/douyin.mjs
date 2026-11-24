@@ -333,6 +333,64 @@ export async function douyinFillAndSave(page, job) {
       coverLog.done = true;
     }
 
+    // 4.5 可选地理位置（仅当作者显式确认并传入 job.douyin.location 时填写，绝不写死默认值）
+    step = "location";
+    let locationLog = { skipped: true, target: "", selected: "" };
+    if (job.douyin.location && job.douyin.location !== "不显示位置") {
+      const targetLoc = job.douyin.location;
+      const queryLoc = job.douyin.locationQuery || targetLoc;
+      await page.evaluate(() => {
+        const el = [...document.querySelectorAll("div, span, input")].find(
+          (n) => (n.innerText || n.placeholder || "").trim() === "输入地理位置" && n.getBoundingClientRect().height > 8
+        );
+        el?.scrollIntoView({ block: "center", behavior: "instant" });
+      });
+      await page.waitForTimeout(300);
+      await page.click('text="输入地理位置"', { label: "focus DY location input", timeout: 6000 });
+      await page.waitForTimeout(450);
+      await page.keyboard.type(queryLoc, { delay: 65 });
+      await page.waitForTimeout(1800);
+
+      const picked = await page.evaluate((target) => {
+        const isSubPoi = (t) => /(停车场|接送点|招商办公室|便利店|银泰百货|[A-Z]栋|\(.*(?:店|门|出口)\)|（.*(?:店|门|出口)）)/.test(t);
+        const chars = [...target.replace(/\s+/g, "")];
+        const isSubseq = (hay) => {
+          let i = 0;
+          for (const ch of hay) if (i < chars.length && ch === chars[i]) i++;
+          return i === chars.length;
+        };
+        const nodes = [...document.querySelectorAll('div, li, span')].filter((el) => {
+          const r = el.getBoundingClientRect();
+          const t = (el.innerText || "").trim();
+          if (r.width < 60 || r.height < 16 || r.height > 90) return false;
+          if (!t || t.length > 80 || t.includes("\n")) return false;
+          if (/^(本地|国内|国际|输入地理位置|点击加载更多|添加标签|位置)$/.test(t)) return false;
+          return t.includes(target) || isSubseq(t);
+        });
+        const leaf = nodes.filter((el) => !nodes.some((o) => o !== el && el.contains(o)));
+        const scored = leaf.map((el) => {
+          const name = (el.innerText || "").trim();
+          const r = el.getBoundingClientRect();
+          let score = 0;
+          if (name === target) score += 100;
+          else if (name.startsWith(target)) score += 60;
+          else if (isSubseq(name)) score += 45;
+          if (!isSubPoi(name)) score += 30;
+          score -= Math.min(20, Math.abs(name.length - target.length));
+          return { name, score, x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+        });
+        scored.sort((a, b) => b.score - a.score);
+        return { best: scored[0] || null, candidates: scored.slice(0, 6).map((s) => s.name) };
+      }, targetLoc);
+
+      if (!picked.best) {
+        throw new Error(`抖音地理位置搜索「${queryLoc}」未找到匹配「${targetLoc}」的 POI 候选`);
+      }
+      await page.mouse.click(picked.best.x, picked.best.y, { label: "select DY location POI" });
+      await page.waitForTimeout(800);
+      locationLog = { skipped: false, target: targetLoc, query: queryLoc, selected: picked.best.name, candidates: picked.candidates };
+    }
+
     // 5. 等待视频上传结束并点「暂存离开」
     step = "save_draft";
     await page
@@ -368,7 +426,7 @@ export async function douyinFillAndSave(page, job) {
       });
     }
 
-    return { status: "ok", topicLogs, coverLog, afterSave };
+    return { status: "ok", topicLogs, coverLog, locationLog, afterSave };
   } catch (err) {
     return makeFallback(step, err, await collectLightDiagnostics(page));
   }
@@ -439,11 +497,23 @@ export async function douyinReopenAndVerify(page, job) {
           linkedActivities.push(rowTxt.slice(0, 60));
         }
       }
+      const locSec = [...document.querySelectorAll("div")].find(
+        (d) => (d.innerText || "").includes("添加标签") && (d.innerText || "").includes("关联热点") && d.getBoundingClientRect().height < 420
+      );
+      let selectedLocation = "";
+      if (locSec) {
+        const lines = (locSec.innerText || "").split("\n").map((s) => s.trim()).filter(Boolean);
+        const posIdx = lines.indexOf("位置");
+        if (posIdx >= 0 && lines[posIdx + 1] && lines[posIdx + 1] !== "输入地理位置" && lines[posIdx + 1] !== "为你推荐：") {
+          selectedLocation = lines[posIdx + 1];
+        }
+      }
       return {
-        url: location.href,
+        url: window.location.href,
         title,
         count: txt.match(/\d+\/30/)?.[0] || "",
         mentions,
+        location: selectedLocation,
         decl,
         missingCoverWarn: txt.includes("横/竖双封面缺失"),
         linkedActivities: [...new Set(linkedActivities)],
@@ -457,6 +527,9 @@ export async function douyinReopenAndVerify(page, job) {
     if (verified.title !== job.douyin.title) issues.push(`标题不一致（可能复开了别的稿）: "${verified.title}"`);
     if (verified.mentions.length < job.douyin.topics.length) {
       issues.push(`话题实体数量不足: ${verified.mentions.length}/${job.douyin.topics.length}`);
+    }
+    if (job.douyin.location && job.douyin.location !== "不显示位置" && !verified.location) {
+      issues.push(`抖音地理位置未生效: 期望包含「${job.douyin.location}」，当前为空`);
     }
     if (!verified.decl.includes(expectedDecl)) issues.push(`自主声明不符: 期望「${expectedDecl}」，实际「${verified.decl}」`);
     if (!job.allowActivities && verified.linkedActivities?.length > 0) {

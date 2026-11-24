@@ -257,7 +257,27 @@ export function probeImage(imgPath) {
 }
 
 const VALID_PLATFORMS = ["xhs", "douyin", "bilibili", "wechat", "x"];
-export const DEFAULT_WECHAT_LOCATION = "温州世贸大厦";
+export const WECHAT_NO_LOCATION = "不显示位置";
+
+/**
+ * 归一化单平台地点配置：绝不写死具体地标；留空或「不显示位置」时按平台返回空串或「不显示位置」。
+ */
+function resolvePlatformLocation(platformCfg, topLocation, topLocationQuery, isWechat = false) {
+  const hasPlatformLoc = platformCfg && Object.prototype.hasOwnProperty.call(platformCfg, "location");
+  const raw = hasPlatformLoc ? platformCfg.location : topLocation;
+  const trimmed = typeof raw === "string" ? raw.trim() : "";
+  if (!trimmed || trimmed === WECHAT_NO_LOCATION) {
+    return {
+      location: isWechat ? WECHAT_NO_LOCATION : "",
+      locationQuery: isWechat ? WECHAT_NO_LOCATION : "",
+    };
+  }
+  const queryRaw =
+    (platformCfg && typeof platformCfg.locationQuery === "string" && platformCfg.locationQuery.trim()) ||
+    (typeof topLocationQuery === "string" && topLocationQuery.trim()) ||
+    trimmed;
+  return { location: trimmed, locationQuery: queryRaw };
+}
 
 /**
  * 校验并标准化任务配置，返回含探测元数据与默认推导结果的 normalizedJob。
@@ -478,6 +498,23 @@ export function validateAndNormalizeJob(rawJob, options = {}) {
     ? [title, baseDescription, topicLine].filter(Boolean).join("\n\n")
     : (topicLine ? `${title} ${topicLine}` : title);
 
+  const hasExplicitLocation =
+    Object.prototype.hasOwnProperty.call(job, "location") ||
+    (job.xhs && Object.prototype.hasOwnProperty.call(job.xhs, "location")) ||
+    (job.douyin && Object.prototype.hasOwnProperty.call(job.douyin, "location")) ||
+    (job.wechat && Object.prototype.hasOwnProperty.call(job.wechat, "location"));
+  if (!hasExplicitLocation && platforms.some((p) => ["xhs", "douyin", "wechat"].includes(p))) {
+    warnings.push(
+      "未显式声明 location（小红书/抖音将留空不填，微信视频号将设为「不显示位置」）；地点绝不写死，开工前请先向作者确认本次是否添加地点及具体地标。"
+    );
+  }
+
+  const topLocation = typeof job.location === "string" ? job.location.trim() : "";
+  const topLocationQuery = typeof job.locationQuery === "string" ? job.locationQuery.trim() : "";
+  const xhsLoc = resolvePlatformLocation(job.xhs, topLocation, topLocationQuery, false);
+  const douyinLoc = resolvePlatformLocation(job.douyin, topLocation, topLocationQuery, false);
+  const wechatLoc = resolvePlatformLocation(job.wechat, topLocation, topLocationQuery, true);
+
   return {
     taskName,
     spaceId: job.spaceId ?? null,
@@ -492,11 +529,14 @@ export function validateAndNormalizeJob(rawJob, options = {}) {
     aiGenerated: job.aiGenerated,
     allowActivities,
     allowBlackBars,
+    location: topLocation,
     topics: baseTopics,
     xhs: {
       title: job.xhs?.title || title,
       description: job.xhs?.description ?? baseDescription,
       topics: job.xhs?.topics || baseTopics.slice(0, 5),
+      location: xhsLoc.location,
+      locationQuery: xhsLoc.locationQuery,
       videoPath: xhsVideoPath,
       coverRatio: xhsCoverRatio,
       coverPath: covers[xhsCoverRatio]?.path || null,
@@ -505,6 +545,8 @@ export function validateAndNormalizeJob(rawJob, options = {}) {
       title: job.douyin?.title || title,
       description: job.douyin?.description ?? baseDescription,
       topics: job.douyin?.topics || baseTopics.slice(0, 5),
+      location: douyinLoc.location,
+      locationQuery: douyinLoc.locationQuery,
       allowContinueExisting: Boolean(job.douyin?.allowContinueExisting),
       cover3x4: covers["3x4"]?.path || null,
       cover4x3: covers["4x3"]?.path || null,
@@ -522,8 +564,8 @@ export function validateAndNormalizeJob(rawJob, options = {}) {
       topics: job.wechat?.topics || baseTopics.slice(0, 5),
       description: job.wechat?.description || defaultWechatDesc,
       shortTitle,
-      location: job.wechat?.location || DEFAULT_WECHAT_LOCATION,
-      locationQuery: job.wechat?.locationQuery || job.wechat?.location || DEFAULT_WECHAT_LOCATION,
+      location: wechatLoc.location,
+      locationQuery: wechatLoc.locationQuery,
       cover3x4: covers["3x4"]?.path || null,
       cover4x3: covers["4x3"]?.path || null,
     },

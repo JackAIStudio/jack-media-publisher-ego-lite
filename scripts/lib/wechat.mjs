@@ -5,7 +5,7 @@ import {
   makeHandoff,
   muteAndPausePage,
 } from "./utils.mjs";
-import { DEFAULT_WECHAT_LOCATION } from "./validate.mjs";
+import { WECHAT_NO_LOCATION } from "./validate.mjs";
 
 export const WECHAT_URL = "https://channels.weixin.qq.com/platform/post/create";
 export const WECHAT_DRAFT_LIST_URL = "https://channels.weixin.qq.com/platform/post/draftListManager";
@@ -51,7 +51,7 @@ export async function wechatInspectAndInject(page, job) {
 }
 
 /**
- * 阶段 1b：等上传转码解锁 -> 填描述/短标题/位置（默认「温州世贸大厦」）/原创 -> 按页面实际卡片传封面 -> 保存草稿（视频标注留到 Pass 2）。
+ * 阶段 1b：等上传转码解锁 -> 填描述/短标题/可选位置/原创 -> 按页面实际卡片传封面 -> 保存草稿（视频标注留到 Pass 2）。
  */
 export async function wechatFillAndSave(page, job) {
   let step = "wait_unlock";
@@ -99,9 +99,9 @@ export async function wechatFillAndSave(page, job) {
       await page.fill(shortSel, job.wechat.shortTitle).catch(() => {});
     }
 
-    // 2. 位置（默认设为「温州世贸大厦」；支持「不显示位置」、城市名或任意 POI 关键词搜索并精确选中）
+    // 2. 位置（绝不写死具体地标；未指定时设为「不显示位置」，指定时按关键词搜索并精确选中 POI）
     step = "location";
-    const targetLoc = job.wechat.location || DEFAULT_WECHAT_LOCATION;
+    const targetLoc = job.wechat.location || WECHAT_NO_LOCATION;
     const searchLocQuery = job.wechat.locationQuery || targetLoc;
     const currentLoc = await page.evaluate(() => {
       const root = document.querySelector("wujie-app")?.shadowRoot || document;
@@ -628,7 +628,7 @@ export async function wechatVerifyAndLabel(task, origPage, job) {
 
     const issues = [];
     if (!listMatch.found) issues.push("草稿箱列表未查到本条草稿");
-    const expectedLoc = job.wechat.location || DEFAULT_WECHAT_LOCATION;
+    const expectedLoc = job.wechat.location || WECHAT_NO_LOCATION;
     if (!origPageFinal.pos.includes(expectedLoc)) {
       issues.push(`位置不符: 期望「${expectedLoc}」，实际「${origPageFinal.pos}」`);
     }

@@ -172,7 +172,10 @@ console.log(JSON.stringify(out));
             self.assertTrue(payload['dryRun'])
             self.assertEqual(payload['normalized']['platforms'], ['xhs', 'douyin', 'bilibili', 'wechat', 'x'])
             self.assertEqual(payload['normalized']['xhs']['coverRatio'], '3x4')
-            self.assertEqual(payload['normalized']['wechat']['location'], '温州世贸大厦')
+            self.assertEqual(payload['normalized']['xhs']['location'], '')
+            self.assertEqual(payload['normalized']['douyin']['location'], '')
+            self.assertEqual(payload['normalized']['wechat']['location'], '不显示位置')
+            self.assertTrue(any('location' in w for w in payload['normalized']['warnings']))
             self.assertFalse(payload['normalized']['bilibili']['authDeclaration'])
             self.assertEqual(payload['normalized']['x']['description'], '')
             self.assertEqual(payload['normalized']['x']['tweetText'], '')
@@ -295,6 +298,48 @@ console.log(JSON.stringify(out));
                 self.assertRegex(text, r'竖屏[^\n]*(?:9:16|3:4)')
                 self.assertRegex(text, r'横屏[^\n]*16:9')
                 self.assertNotIn('自定义 16:9 缩略图', text)
+
+    def test_location_not_hardcoded_and_optional_three_platforms(self):
+        for rel in ('SKILL.md', 'references/platforms.md', 'references/selectors.md', 'references/gotchas.md'):
+            text = (ROOT / rel).read_text(encoding='utf-8')
+            with self.subTest(file=rel):
+                self.assertNotIn('默认设为「温州世贸大厦」', text)
+                self.assertNotIn('默认目标「温州世贸大厦」', text)
+        skill = (ROOT / 'SKILL.md').read_text(encoding='utf-8')
+        self.assertIn('绝不写死', skill)
+        self.assertIn('每次必问', skill)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            job_path = Path(tmpdir) / 'job_loc.json'
+            job_path.write_text(
+                json.dumps(
+                    {
+                        'title': '三平台地点透传测试',
+                        'video': str(ROOT / 'fixtures/clip.mp4'),
+                        'covers': {'3x4': str(ROOT / 'fixtures/cover-3x4.png')},
+                        'topics': ['AI'],
+                        'original': True,
+                        'aiGenerated': False,
+                        'location': '示例地标A',
+                        'douyin': {'location': '示例地标B'},
+                        'xhs': {'location': ''},
+                        'bilibili': {'category': '人工智能'},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding='utf-8',
+            )
+            dry = subprocess.run(
+                ['node', str(ROOT / 'scripts/run.mjs'), '--job', str(job_path), '--dry-run'],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(dry.returncode, 0, f'Location dry-run failed: {dry.stderr}\n{dry.stdout}')
+            norm = json.loads(dry.stdout)['normalized']
+            self.assertEqual(norm['wechat']['location'], '示例地标A')
+            self.assertEqual(norm['douyin']['location'], '示例地标B')
+            self.assertEqual(norm['xhs']['location'], '')
 
 
 if __name__ == '__main__':
