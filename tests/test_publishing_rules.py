@@ -341,6 +341,26 @@ console.log(JSON.stringify(out));
             self.assertEqual(norm['douyin']['location'], '示例地标B')
             self.assertEqual(norm['xhs']['location'], '')
 
+    def test_companion_copy_profile_hook_and_privacy(self):
+        gitignore = (ROOT / '.gitignore').read_text(encoding='utf-8')
+        self.assertIn('/local/', gitignore)
+
+        example_path = ROOT / 'references/copy-profile.example.md'
+        self.assertTrue(example_path.exists(), 'Missing references/copy-profile.example.md')
+        example_text = example_path.read_text(encoding='utf-8')
+        for channel in ('微信朋友圈', 'X', 'YouTube'):
+            self.assertIn(channel, example_text)
+        for private_token in ('12月线下', '温州', '练两组', '@I_am_oil_oil', 'followjack.cn'):
+            self.assertNotIn(private_token, example_text)
+
+        for rel in ('SKILL.md', 'README.md'):
+            text = (ROOT / rel).read_text(encoding='utf-8')
+            with self.subTest(file=rel):
+                self.assertIn('local/copy-profile.md', text)
+                self.assertIn('copy-profile.example.md', text)
+                self.assertIn('微信朋友圈', text)
+                self.assertIn('YouTube', text)
+
 
 if __name__ == '__main__':
     unittest.main()

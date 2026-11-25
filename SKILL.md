@@ -17,6 +17,7 @@ disable-model-invocation: true
   - 平台暗坑与故障退路：[gotchas.md](<references/gotchas.md>)
   - 上传、字段、封面与复开验收：[verification.md](<references/verification.md>)
   - 标题加权计数：[title-limits.md](<references/title-limits.md>) · B 站分区：[bilibili-categories.md](<references/bilibili-categories.md>)
+  - 分发伴生文案配置（可选）：优先读取本地私有文件 `local/copy-profile.md`（已在 `.gitignore` 中忽略，可软链接自作者私有仓库）；若同目录下挂载了历史语料（如 `local/moments/style_corpus.md`），遇到新题材可按需检索 2–3 条同类过往表达参考；未配置时参考通用范例 [copy-profile.example.md](<references/copy-profile.example.md>)
   - 快速通道脚本入口：[run.mjs](<scripts/run.mjs>)
 
 ## 执行思维：快速通道（Fast Path）+ Agent 自主兜底
@@ -121,7 +122,7 @@ ffprobe -v error -show_entries format=duration,size,bit_rate:format_tags=title,c
    - 原标题、简介/正文偏好（默认国内四平台仅放话题/B站留空、X 说明与推文框留空；如要求四平台简介统一则写入 `description`）、话题（指定清单还是委托 Agent 自选）、B 站分区倾向；
    - 权属与 AI 声明事实：尤其是当原标题、视频元数据 `comment`、画面内容或历史记录之间出现矛盾时，必须先向 Jack 核实成片/封面/配乐是否实际含 AI 生成素材；
    - **是否添加同城地点（每次必问，绝不写死）**：向 Jack 确认本次小红书、抖音、微信视频号是否需要添加地理位置以及具体地标名（可通过 `job.location` 同步填三平台，或按平台单独覆写 / 留空不填）；
-   - 小红书封面比例（按成片方向自动选 3:4 或 4:3，确认本次来图是否匹配）及其他覆盖默认偏好的特例。
+   - 小红书封面比例（按成片方向自动选 3:4 或 4:3，确认本次来图是否匹配）、伴生文案补充信息（如本次是否需要附特定开源/项目链接或致谢 `@` 某位上游作者）及其他覆盖默认偏好的特例。
 
 ### 1. 打开空间、前置登录核验与草稿盘点
 
@@ -177,3 +178,11 @@ await task.finish({ keep: handoffLabels });
 ```
 
 汇报时逐平台给出：账号、上传与处理证据、标题/分区/话题实体/声明/授权回读结果、各封面槽来源与校验回执、草稿复查结果及最终留下的标签页状态。
+
+### 7. 伴生分发文案自动交付（不擅自代填）
+
+在 `finish` 留页交接汇报的末尾，**默认自动顺带产出伴生分发文案建议**（无需作者每期再单独询问）：
+
+- **默认覆盖渠道**：**微信朋友圈**（转发微信视频号配文）与 **X 推文正文**；若本次同时准备或明确提及 YouTube，一并产出 **YouTube 标题与简介**。
+- **私有配置优先（开源零泄露）**：先检查本技能目录下的 `local/copy-profile.md`（该路径已被 `.gitignore` 忽略，支持直接编写或软链接到作者私有仓库）。存在时严格遵循其中的受众分层、篇幅、外链习惯与真实风格范例；若 `local/moments/` 下同时挂载了作者本地历史语料（如 `style_corpus.md` / `moments.jsonl`），默认仍以精简的 `copy-profile.md` 为准，仅在需要对齐特定题材的历史语气时按需检索 2–3 条同类原话参考（不要整份塞入上下文）；均未配置时按 [copy-profile.example.md](<references/copy-profile.example.md>) 的通用原则给出简洁、克制的初稿。
+- **硬边界不变**：伴生文案仅在交接回复里提供复制块供作者选用或微调，**绝不未经明确指令私自写入 X 撰写页**，更绝不点击任何发布或定时发布按钮。

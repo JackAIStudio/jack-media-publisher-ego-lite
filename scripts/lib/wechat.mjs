@@ -106,7 +106,11 @@ export async function wechatFillAndSave(page, job) {
     const currentLoc = await page.evaluate(() => {
       const root = document.querySelector("wujie-app")?.shadowRoot || document;
       root.querySelector(".post-position-wrap")?.scrollIntoView({ block: "center" });
-      return (root.querySelector(".post-position-wrap .location-name")?.innerText || "").trim();
+      return (
+        root.querySelector(
+          ".post-position-wrap .location-name, .post-position-wrap .not-display, .post-position-wrap .position-display"
+        )?.innerText || ""
+      ).trim();
     });
     await page.waitForTimeout(250);
 
@@ -124,9 +128,9 @@ export async function wechatFillAndSave(page, job) {
         } catch {
           await page.evaluate(() => {
             const root = document.querySelector("wujie-app")?.shadowRoot || document;
-            const item = [...root.querySelectorAll(".location-filter-wrap .option-item")].find(
-              (el) => (el.querySelector(".name")?.innerText || el.innerText || "").trim() === "不显示位置"
-            );
+            const item = [
+              ...root.querySelectorAll(".location-filter-wrap .option-item, .location-filter-wrap .location-item"),
+            ].find((el) => (el.querySelector(".name")?.innerText || el.innerText || "").trim() === "不显示位置");
             item?.click();
           });
         }
@@ -134,7 +138,9 @@ export async function wechatFillAndSave(page, job) {
         // 先检查默认列表是否已含精确项；若无则走「搜索附近位置」输入框查询
         const alreadyInInitialList = await page.evaluate((loc) => {
           const root = document.querySelector("wujie-app")?.shadowRoot || document;
-          return [...root.querySelectorAll(".location-filter-wrap .option-item")].some(
+          return [
+            ...root.querySelectorAll(".location-filter-wrap .option-item, .location-filter-wrap .location-item"),
+          ].some(
             (el) =>
               el.getBoundingClientRect().height > 0 &&
               (el.querySelector(".name")?.innerText || "").trim() === loc
@@ -154,7 +160,9 @@ export async function wechatFillAndSave(page, job) {
             .waitForFunction(
               (loc) => {
                 const root = document.querySelector("wujie-app")?.shadowRoot || document;
-                return [...root.querySelectorAll(".location-filter-wrap .option-item")].some(
+                return [
+                  ...root.querySelectorAll(".location-filter-wrap .option-item, .location-filter-wrap .location-item"),
+                ].some(
                   (el) =>
                     el.getBoundingClientRect().height > 0 &&
                     (el.querySelector(".name")?.innerText || "").trim() === loc
@@ -167,12 +175,12 @@ export async function wechatFillAndSave(page, job) {
           await page.waitForTimeout(400);
         }
 
-        // 严格按 .option-item .name 精确匹配点击，防止误点同前缀商铺或停车场
+        // 严格按 .option-item/.location-item .name 精确匹配点击，防止误点同前缀商铺或停车场
         const picked = await page.evaluate((loc) => {
           const root = document.querySelector("wujie-app")?.shadowRoot || document;
-          const items = [...root.querySelectorAll(".location-filter-wrap .option-item")].filter(
-            (el) => el.getBoundingClientRect().height > 0
-          );
+          const items = [
+            ...root.querySelectorAll(".location-filter-wrap .option-item, .location-filter-wrap .location-item"),
+          ].filter((el) => el.getBoundingClientRect().height > 0);
           const exact = items.find((el) => (el.querySelector(".name")?.innerText || "").trim() === loc);
           if (exact) {
             exact.scrollIntoView({ block: "nearest" });
@@ -203,8 +211,12 @@ export async function wechatFillAndSave(page, job) {
       const locCheck = await page.evaluate(() => {
         const root = document.querySelector("wujie-app")?.shadowRoot || document;
         const wrap = root.querySelector(".location-filter-wrap");
-        const displayed = (root.querySelector(".post-position-wrap .location-name")?.innerText || "").trim();
-        const stillOpen = !!wrap && getComputedStyle(wrap).display !== "none";
+        const displayed = (
+          root.querySelector(
+            ".post-position-wrap .location-name, .post-position-wrap .not-display, .post-position-wrap .position-display"
+          )?.innerText || ""
+        ).trim();
+        const stillOpen = !!wrap && getComputedStyle(wrap).display !== "none" && wrap.getBoundingClientRect().height > 0;
         return { displayed, stillOpen };
       });
       if (locCheck.stillOpen) {

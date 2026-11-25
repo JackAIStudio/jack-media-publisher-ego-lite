@@ -58,6 +58,15 @@ git -C "$HOME/.agents/skills/jack-media-publisher-ego-lite" pull --ff-only
 
 仓库自带参数化快速通道脚本 [`scripts/run.mjs`](<scripts/run.mjs>)（`--dry-run` / `--stage pass1|pass2|finish|offline`），以「两段式流水线（先批量填稿存草稿 → 再统一复开总检）」减少模型推理轮次与冗余截屏。脚本仅是加速通道：五平台彼此隔离执行，任何平台如因前端改版或异常弹窗返回 `needs_agent_fallback`，现场标签页会原样保留并交由助手接管排查补齐，绝不会阻断其余平台。
 
+## 伴生分发文案（私有定制插槽）
+
+五平台草稿复开验收并留页交接时，助手会在汇报末尾自动顺带提供**微信朋友圈转发配文**与 **X 推文正文**建议（同时预留 **YouTube** 标题与简介槽位），且仍坚守「X 撰写页默认留空、不代点发布」的边界。
+
+不同创作者在朋友圈和 X 上的受众与语气差异很大，本仓库采用「开源插槽 + 本地私有档案」解耦：
+
+- 公开仓库提供空白模板 [`references/copy-profile.example.md`](<references/copy-profile.example.md>)；
+- 个人风格、真实发文样本、业务上下文与外链习惯放在 `local/copy-profile.md`，可选历史语料可软链至 `local/moments/`（`/local/` 已在 `.gitignore` 中忽略，绝不会进入 Git，可直接软链接到你的私有笔记或私有 Skill 仓库）。
+
 ## 本机规则自检
 
 改动平台规则、快速通道脚本或参考文档后，可在仓库根目录运行规则回归测试：
