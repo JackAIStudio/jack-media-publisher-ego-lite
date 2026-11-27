@@ -134,3 +134,30 @@ const isPanelActive = id =>
 2. **先挂 `page.waitForFileChooser()`，再点击文字链接 `a:text-is("上传")`**（**切勿**盲找页面里的第一个 `input[type="file"]`，该控件是媒体库主上传框，会把封面误传成独立图片素材！）；
 3. 选图建议先压成 **≤ 1 MB 的同方向高清 JPG**（实测超过 2 MB 的无损 PNG 易慢传或被拒）；上传后静候转圈完成与 `upload.json (FINALIZE 201)` → `edit.json (200)` +「保存成功」提示；
 4. **验收方式**：视频播放器若已解码第 0 帧或 `currentTime > 0`，肉眼画面仍会停在视频帧，必须调用 `page.fetch("/1/library/get.json?...&media_key=<mediaKey>")` 核对服务器端返回的新缩略图已切换为 `https://pbs.twimg.com/media/...`（取代默认 `amplify_video_thumb/...`）并可拉图核验构图。
+
+---
+
+## 原生图文模式实测控件
+
+原生图文模式（`mode: "image"`）在小部分核心控件上与视频页不同（2026-11-28 实测）：
+
+### 小红书图文（`?target=image`）
+- **传图控件**：`input.upload-input`（`accept=".jpg,.jpeg,.png,.webp"`、`multiple`），支持一次 `setInputFiles` 传入多张本地图片。
+- **新手指引气泡**：进入图文编辑页后可能弹出 `.feature-guide__btn`（「我知道了」），必须先点击关闭再聚焦正文 `div.tiptap.ProseMirror`，否则会吞掉正文输入。
+- **暂存离开**：底部 `<xhs-publish-btn>` 属 closed shadow DOM，`text="暂存离开"` 在图文页可能匹配 0 节点，**优先执行 `page.snapshot({ scope: "full_page" })` 匹配 `text "暂存离开"` 对应 `@ref` 点击**。
+- **草稿箱复开**：点「草稿箱」后确认位于「图文笔记」Tab，按标题与最新 `保存于` 时间戳点击「编辑」。
+
+### 抖音图文（`default-tab=3`）
+- **传图控件**：同页可能同时存在视频与图片两个 `input[type="file"]`，须筛选 `accept.includes("image")` 的节点注入。
+- **正文换行**：向 `div.zone-container.editor-kit-container` 写入多段正文时，必须**逐行 `keyboard.insertText(line)` + `keyboard.press("Enter")`**，不要把含 `\n` 的整段文本一次 `insertText` 写入。
+- **选择音乐**：左侧标题「选择音乐」不可点，右侧真正触发器为 `.action-Q1y01k`（已选音乐后变为文本「修改音乐」）。抽屉内优先定位 `input[placeholder="搜索音乐"]` 键入纯音乐关键词按 Enter，hover 候选曲目行后点击行内「使用」按钮，再静音暂停。
+- **已选音乐回读**：主表单通过 `.sub-desc-title-yp0uUv` 读取当前选中曲目名称。
+
+### 微信视频号图文（`finderNewLifeCreate`，`wujie-app` shadow DOM）
+- **传图控件**：`wujie-app` shadowRoot 内的 `.ant-upload-drag-container` **不能**直接对内部隐藏 `input[type="file"]` 调 `setInputFiles`（实测静默失效），必须先挂 `page.waitForFileChooser()` 再用 `page.mouse.click` 点击 `.ant-upload-drag-container` 选图；上传完成后在 `img.slider-img` 核对原图真实像素。
+- **独立图文标题**：`input[placeholder*="填写标题"]`（上限 22 字符）。
+- **背景音乐更换**：点击 `.bgm-form-content-wrap` 外层的 `.link-display-wrap` 展开 `.link-list-options`；不加音乐时点击「不添加音乐」，搜歌时在 `input[placeholder*="搜索歌名"]` 逐字 `keyboard.type()` 并点击 `.weui-desktop-search__btn` + Enter。命中结果后**不能只点 `.song-info`（仅试听）**，必须找到包含「选择」按钮的整行容器，hover 后点击该行右侧「选择」按钮，并确认 `.bgm-form-content-wrap` 文本更新且 `.link-list-options` 已收起（防止遮挡下方「视频标注」和「保存草稿」）。
+
+### X 原生发帖与 B 站动态（按需）
+- **X（`x.com/compose/post`）**：图片通过 `input[data-testid="fileInput"] >> nth=0` 注入（≤ 4 张）；推文框 `[data-testid="tweetTextarea_0"]` 默认留空，绝不点击 `[data-testid="tweetButton"]` 或 `[data-testid="scheduleOption"]`。
+- **B 站动态（`t.bilibili.com`）**：先带 `{ credentials: "include" }` 调 `nav` 验登录态；挂 `waitForFileChooser()` 点击 `.bili-dyn-publishing__tools__item.pic` 传图；选填标题填 `input.bili-dyn-publishing__title__input`（≤ 20 字），正文填 `.bili-dyn-publishing .bili-rich-textarea__inner`，无草稿箱直接留页交接。

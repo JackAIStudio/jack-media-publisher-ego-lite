@@ -6,6 +6,22 @@ import { DOUYIN_URL, douyinInspectAndInject, douyinFillAndSave, douyinReopenAndV
 import { BILI_URL, bilibiliInspectAndInject, bilibiliFillAndSave, bilibiliReopenAndVerify } from "./bilibili.mjs";
 import { WECHAT_URL, wechatInspectAndInject, wechatFillAndSave, wechatVerifyAndLabel } from "./wechat.mjs";
 import { X_URL, xInspectAndInject, xFillAndSave, xVerifyAndCompose } from "./x.mjs";
+import {
+  IMAGE_PLATFORM_URLS,
+  xhsImageInspectAndInject,
+  xhsImageFillAndSave,
+  xhsImageReopenAndVerify,
+  douyinImageInspectAndInject,
+  douyinImageFillAndSave,
+  douyinImageReopenAndVerify,
+  wechatImageInspectAndInject,
+  wechatImageFillAndSave,
+  wechatImageVerifyAndLabel,
+  xImageInspectAndInject,
+  xImageFillAndVerify,
+  bilibiliDynamicInspectAndInject,
+  bilibiliDynamicFillAndVerify,
+} from "./image-mode.mjs";
 
 const PLATFORM_URLS = {
   xhs: XHS_URL,
@@ -169,43 +185,73 @@ async function runPass1(ctx, job) {
     await launcherPage.close().catch(() => {});
   }
 
+  const isImageMode = job.mode === "image";
+  const urlMap = isImageMode ? IMAGE_PLATFORM_URLS : PLATFORM_URLS;
+
   // 并行导航到各平台入口
   await Promise.all(
     job.platforms.map((key) =>
-      pageMap[key].goto(PLATFORM_URLS[key], { timeout: 30000 }).catch((e) => ({ navErr: e.message }))
+      pageMap[key].goto(urlMap[key], { timeout: 30000 }).catch((e) => ({ navErr: e.message }))
     )
   );
 
-  // 并行核验登录与注入成片
-  const injectHandlers = {
-    xhs: xhsInspectAndInject,
-    douyin: douyinInspectAndInject,
-    bilibili: bilibiliInspectAndInject,
-    wechat: wechatInspectAndInject,
-    x: xInspectAndInject,
-  };
+  // 并行核验登录与注入素材（视频或图文）
+  const injectHandlers = isImageMode
+    ? {
+        xhs: xhsImageInspectAndInject,
+        douyin: douyinImageInspectAndInject,
+        wechat: wechatImageInspectAndInject,
+        x: xImageInspectAndInject,
+        bilibili: bilibiliDynamicInspectAndInject,
+      }
+    : {
+        xhs: xhsInspectAndInject,
+        douyin: douyinInspectAndInject,
+        bilibili: bilibiliInspectAndInject,
+        wechat: wechatInspectAndInject,
+        x: xInspectAndInject,
+      };
   const injectResults = {};
-  await Promise.all(
-    job.platforms.map(async (key) => {
+  if (isImageMode) {
+    // 图文模式下微信视频号依赖 waitForFileChooser 点击，按序注入更稳妥（单张/多图仅数秒）
+    for (const key of job.platforms) {
       try {
         injectResults[key] = await injectHandlers[key](pageMap[key], job);
       } catch (e) {
         injectResults[key] = { status: "needs_agent_fallback", failedStep: "inject", reason: e.message };
       }
-    })
-  );
+    }
+  } else {
+    await Promise.all(
+      job.platforms.map(async (key) => {
+        try {
+          injectResults[key] = await injectHandlers[key](pageMap[key], job);
+        } catch (e) {
+          injectResults[key] = { status: "needs_agent_fallback", failedStep: "inject", reason: e.message };
+        }
+      })
+    );
+  }
 
   await Promise.all(job.platforms.map((key) => muteAndPausePage(pageMap[key])));
 
-  // 按黄金顺序执行填稿存草稿：小红书 -> 抖音 -> B 站 -> 微信视频号 -> X（此时转码均已完成）
+  // 按黄金顺序执行填稿存草稿
   const fillOrder = ["xhs", "douyin", "bilibili", "wechat", "x"].filter((k) => job.platforms.includes(k));
-  const fillHandlers = {
-    xhs: xhsFillAndSave,
-    douyin: douyinFillAndSave,
-    bilibili: bilibiliFillAndSave,
-    wechat: wechatFillAndSave,
-    x: xFillAndSave,
-  };
+  const fillHandlers = isImageMode
+    ? {
+        xhs: xhsImageFillAndSave,
+        douyin: douyinImageFillAndSave,
+        wechat: wechatImageFillAndSave,
+        x: xImageFillAndVerify,
+        bilibili: bilibiliDynamicFillAndVerify,
+      }
+    : {
+        xhs: xhsFillAndSave,
+        douyin: douyinFillAndSave,
+        bilibili: bilibiliFillAndSave,
+        wechat: wechatFillAndSave,
+        x: xFillAndSave,
+      };
 
   const results = {};
   for (const key of fillOrder) {
@@ -241,6 +287,8 @@ async function runPass2(ctx, job) {
   const results = {};
   const audioRestored = {};
 
+  const isImageMode = job.mode === "image";
+
   for (const key of job.platforms) {
     const label = pageLabels[key];
     if (!label) {
@@ -248,11 +296,19 @@ async function runPass2(ctx, job) {
       continue;
     }
     const page = task.page(label);
-    if (key === "xhs") results[key] = await xhsReopenAndVerify(page, job);
-    else if (key === "douyin") results[key] = await douyinReopenAndVerify(page, job);
-    else if (key === "bilibili") results[key] = await bilibiliReopenAndVerify(page, job);
-    else if (key === "wechat") results[key] = await wechatVerifyAndLabel(task, page, job);
-    else if (key === "x") results[key] = await xVerifyAndCompose(page, job);
+    if (isImageMode) {
+      if (key === "xhs") results[key] = await xhsImageReopenAndVerify(page, job);
+      else if (key === "douyin") results[key] = await douyinImageReopenAndVerify(page, job);
+      else if (key === "wechat") results[key] = await wechatImageVerifyAndLabel(task, page, job);
+      else if (key === "x") results[key] = await xImageFillAndVerify(page, job);
+      else if (key === "bilibili") results[key] = { status: "ok", note: "B 站动态无草稿箱，已在 Pass 1 保留原发布页交接。" };
+    } else {
+      if (key === "xhs") results[key] = await xhsReopenAndVerify(page, job);
+      else if (key === "douyin") results[key] = await douyinReopenAndVerify(page, job);
+      else if (key === "bilibili") results[key] = await bilibiliReopenAndVerify(page, job);
+      else if (key === "wechat") results[key] = await wechatVerifyAndLabel(task, page, job);
+      else if (key === "x") results[key] = await xVerifyAndCompose(page, job);
+    }
 
     audioRestored[key] = await restorePausedUnmuted(page);
   }

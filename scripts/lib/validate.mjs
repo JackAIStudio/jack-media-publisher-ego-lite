@@ -257,7 +257,43 @@ export function probeImage(imgPath) {
 }
 
 const VALID_PLATFORMS = ["xhs", "douyin", "bilibili", "wechat", "x"];
+const DEFAULT_IMAGE_PLATFORMS = ["xhs", "douyin", "wechat"];
+const ALLOWED_IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".webp", ".bmp"]);
 export const WECHAT_NO_LOCATION = "不显示位置";
+
+/**
+ * 归一化图文背景音乐配置：
+ * - undefined / null -> { action: "unset", query: "", prefer: "" }
+ * - "none" / "不添加音乐" -> { action: "none", query: "", prefer: "" }
+ * - 字符串 -> { action: "search", query: str, prefer: "" }
+ * - 对象 { query, prefer, action } -> 对应归一化
+ */
+function resolvePlatformMusic(platformCfg, topMusic) {
+  const hasPlatformMusic = platformCfg && Object.prototype.hasOwnProperty.call(platformCfg, "music");
+  const raw = hasPlatformMusic ? platformCfg.music : topMusic;
+  if (raw == null || raw === "") {
+    return { action: "unset", query: "", prefer: "" };
+  }
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (!trimmed) return { action: "unset", query: "", prefer: "" };
+    if (trimmed === "none" || trimmed === "不添加音乐") {
+      return { action: "none", query: "", prefer: "" };
+    }
+    return { action: "search", query: trimmed, prefer: "" };
+  }
+  if (typeof raw === "object") {
+    const actionRaw = String(raw.action || "").trim();
+    const query = String(raw.query || "").trim();
+    const prefer = String(raw.prefer || "").trim();
+    if (actionRaw === "none" || query === "none" || query === "不添加音乐") {
+      return { action: "none", query: "", prefer: "" };
+    }
+    if (query) return { action: "search", query, prefer };
+    return { action: "unset", query: "", prefer: "" };
+  }
+  return { action: "unset", query: "", prefer: "" };
+}
 
 /**
  * 归一化单平台地点配置：绝不写死具体地标；留空或「不显示位置」时按平台返回空串或「不显示位置」。
@@ -288,6 +324,15 @@ export function validateAndNormalizeJob(rawJob, options = {}) {
   const warnings = [];
   const job = structuredClone(rawJob || {});
 
+  // 模式推导：显式指定 mode 优先；未指定时有 images 且无 video 自动进入 image 模式，否则默认 video 模式
+  const rawMode = job.mode
+    ? String(job.mode).trim().toLowerCase()
+    : (job.images && !job.video ? "image" : "video");
+  if (!["video", "image"].includes(rawMode)) {
+    errors.push(`未知任务模式 mode="${rawMode}"，仅支持 "video" 或 "image"。`);
+  }
+  const isImageMode = rawMode === "image";
+
   if (!job.title || typeof job.title !== "string" || !job.title.trim()) {
     errors.push("缺少必填字段 title（原标题）。");
   }
@@ -295,17 +340,22 @@ export function validateAndNormalizeJob(rawJob, options = {}) {
 
   const platforms = Array.isArray(job.platforms) && job.platforms.length
     ? job.platforms
-    : [...VALID_PLATFORMS];
+    : (isImageMode ? [...DEFAULT_IMAGE_PLATFORMS] : [...VALID_PLATFORMS]);
   for (const p of platforms) {
     if (!VALID_PLATFORMS.includes(p)) {
       errors.push(`未知平台标识 "${p}"，仅支持: ${VALID_PLATFORMS.join(", ")}`);
     }
   }
 
-  // 标题硬上限检查
+  // 标题硬上限检查（注意：抖音视频上限 30，抖音图文实测上限 20；微信视频号图文独立标题上限 22；B 站动态标题上限 20）
   const xhsWeight = calcXhsTitleWeight(title);
   const dyLen = calcDouyinTitleLength(title);
+  const dyLimit = isImageMode ? 20 : 30;
   const biliLen = [...title].length;
+  const biliLimit = isImageMode ? 20 : 80;
+  const wechatTitle = (job.wechat?.title || title).trim();
+  const wechatTitleLen = [...wechatTitle].length;
+
   if (platforms.includes("xhs") && xhsWeight > 20 && !job.xhs?.title) {
     errors.push(`小红书标题加权计数为 ${xhsWeight}/20（超限），请在 job.xhs.title 显式提供协商后的小红书标题。`);
   }
@@ -313,23 +363,31 @@ export function validateAndNormalizeJob(rawJob, options = {}) {
     const customW = calcXhsTitleWeight(job.xhs.title);
     if (customW > 20) errors.push(`job.xhs.title 加权计数为 ${customW}/20（仍超限）。`);
   }
-  if (platforms.includes("douyin") && dyLen > 30 && !job.douyin?.title) {
-    errors.push(`抖音标题字数为 ${dyLen}/30（超限），请在 job.douyin.title 显式提供协商后的抖音标题。`);
+  if (platforms.includes("douyin") && dyLen > dyLimit && !job.douyin?.title) {
+    errors.push(
+      `抖音${isImageMode ? "图文" : ""}标题字数为 ${dyLen}/${dyLimit}（超限），请在 job.douyin.title 显式提供协商后的抖音标题。`
+    );
   }
   if (platforms.includes("douyin") && job.douyin?.title) {
     const customDy = calcDouyinTitleLength(job.douyin.title);
-    if (customDy > 30) errors.push(`job.douyin.title 字数为 ${customDy}/30（仍超限）。`);
+    if (customDy > dyLimit) errors.push(`job.douyin.title 字数为 ${customDy}/${dyLimit}（仍超限）。`);
   }
-  if (platforms.includes("bilibili") && biliLen > 80) {
-    errors.push(`B 站标题字数为 ${biliLen}/80（超限）。`);
+  if (isImageMode && platforms.includes("wechat") && wechatTitleLen > 22) {
+    errors.push(`微信视频号图文标题字数为 ${wechatTitleLen}/22（超限），请在 job.wechat.title 显式提供 ≤22 字标题。`);
+  }
+  if (platforms.includes("bilibili") && biliLen > biliLimit && !job.bilibili?.title) {
+    errors.push(`B 站${isImageMode ? "图文动态" : ""}标题字数为 ${biliLen}/${biliLimit}（超限）。`);
+  }
+  if (platforms.includes("bilibili") && job.bilibili?.title && [...job.bilibili.title.trim()].length > biliLimit) {
+    errors.push(`job.bilibili.title 字数为 ${[...job.bilibili.title.trim()].length}/${biliLimit}（仍超限）。`);
   }
   const xTitle = (job.x?.title || title).trim();
-  if (platforms.includes("x") && [...xTitle].length > 70) {
+  if (!isImageMode && platforms.includes("x") && [...xTitle].length > 70) {
     errors.push(`X 媒体标题字数为 ${[...xTitle].length}/70（超限），请在 job.x.title 显式提供 ≤70 字标题。`);
   }
 
   const shortTitle = job.wechat?.shortTitle || "";
-  if (shortTitle) {
+  if (!isImageMode && shortTitle) {
     if ([...shortTitle].length > 16) {
       errors.push(`微信视频号短标题超限（${[...shortTitle].length}/16）。`);
     }
@@ -346,6 +404,145 @@ export function validateAndNormalizeJob(rawJob, options = {}) {
   const allowActivities = job.allowActivities === true; // 全平台红线：默认绝不关联任何活动，仅当用户明确提起并显式开启时才允许
   const allowBlackBars = job.allowBlackBars === true; // 仅在作者明确确认有意留黑边/异向套框时放行
 
+  // ========== 图文模式独立分支 ==========
+  if (isImageMode) {
+    const rawImages = Array.isArray(job.images)
+      ? job.images
+      : (typeof job.images === "string" && job.images.trim() ? [job.images.trim()] : []);
+    if (!rawImages.length) {
+      errors.push("图文模式（mode=\"image\"）缺少必填字段 images（至少 1 张本地图片绝对路径）。");
+    }
+    if (rawImages.length > 18) {
+      errors.push(`图文模式单次最多支持 18 张图片（小红书与微信视频号上限），当前提供了 ${rawImages.length} 张。`);
+    }
+
+    const imageMetas = [];
+    for (const imgPath of rawImages) {
+      const abs = path.resolve(String(imgPath || ""));
+      if (!fs.existsSync(abs)) {
+        errors.push(`图文图片不存在: ${abs}`);
+        continue;
+      }
+      const ext = path.extname(abs).toLowerCase();
+      if (!ALLOWED_IMAGE_EXTS.has(ext)) {
+        errors.push(`图文图片格式不支持 (${ext})：${abs}（小红书与抖音图文不支持 gif，请用 png/jpg/jpeg/webp）`);
+        continue;
+      }
+      const sizeBytes = fs.statSync(abs).size;
+      if (platforms.includes("wechat") && sizeBytes > 20 * 1024 * 1024) {
+        errors.push(`微信视频号图文单张图片不能超过 20 MB: ${abs} (${(sizeBytes / 1024 / 1024).toFixed(2)} MB)`);
+      } else if (platforms.includes("xhs") && sizeBytes > 32 * 1024 * 1024) {
+        errors.push(`小红书图文单张图片不能超过 32 MB: ${abs} (${(sizeBytes / 1024 / 1024).toFixed(2)} MB)`);
+      } else if (platforms.includes("douyin") && sizeBytes > 50 * 1024 * 1024) {
+        errors.push(`抖音图文单张图片不能超过 50 MB: ${abs} (${(sizeBytes / 1024 / 1024).toFixed(2)} MB)`);
+      }
+      const meta = options.skipProbe
+        ? { path: abs, width: 0, height: 0, ratio: 0 }
+        : probeImage(abs);
+      imageMetas.push({ ...meta, sizeBytes });
+    }
+
+    if (errors.length) {
+      const err = new Error("图文任务配置校验未通过:\n- " + errors.join("\n- "));
+      err.validationErrors = errors;
+      throw err;
+    }
+
+    const baseDescription = typeof job.description === "string" ? job.description.trim() : "";
+    const baseTopics = Array.isArray(job.topics)
+      ? job.topics.map((t) => String(t).replace(/^#/, "").trim()).filter(Boolean)
+      : [];
+    const taskName = job.taskName || `多平台图文草稿 · ${title.slice(0, 18)}`;
+
+    const topicLine = baseTopics.slice(0, 5).map((t) => `#${t}`).join(" ");
+    const defaultWechatImageDesc = baseDescription
+      ? [baseDescription, topicLine].filter(Boolean).join("\n")
+      : (topicLine ? `${wechatTitle} ${topicLine}` : wechatTitle);
+
+    const hasExplicitLocation =
+      Object.prototype.hasOwnProperty.call(job, "location") ||
+      (job.xhs && Object.prototype.hasOwnProperty.call(job.xhs, "location")) ||
+      (job.douyin && Object.prototype.hasOwnProperty.call(job.douyin, "location")) ||
+      (job.wechat && Object.prototype.hasOwnProperty.call(job.wechat, "location"));
+    if (!hasExplicitLocation && platforms.some((p) => ["xhs", "douyin", "wechat"].includes(p))) {
+      warnings.push(
+        "未显式声明 location（小红书/抖音将留空不填，微信视频号将从默认本机城市切为「不显示位置」）；地点绝不写死，开工前请先向作者确认本次是否添加地点及具体地标。"
+      );
+    }
+
+    const topLocation = typeof job.location === "string" ? job.location.trim() : "";
+    const topLocationQuery = typeof job.locationQuery === "string" ? job.locationQuery.trim() : "";
+    const xhsLoc = resolvePlatformLocation(job.xhs, topLocation, topLocationQuery, false);
+    const douyinLoc = resolvePlatformLocation(job.douyin, topLocation, topLocationQuery, false);
+    const wechatLoc = resolvePlatformLocation(job.wechat, topLocation, topLocationQuery, true);
+
+    const douyinMusic = resolvePlatformMusic(job.douyin, job.music);
+    const wechatMusic = resolvePlatformMusic(job.wechat, job.music);
+    if (platforms.includes("wechat") && wechatMusic.action === "unset") {
+      warnings.push(
+        "微信视频号图文上传图片后会自动随机配一首系统 BGM（可能与内容风格不符）；建议通过 job.music 或 job.wechat.music 显式指定纯音乐搜索词（如 \"钢琴\"）或 \"none\"（不添加音乐）。"
+      );
+    }
+    if (platforms.includes("bilibili")) {
+      warnings.push(
+        "B 站图文动态（t.bilibili.com）原生无草稿箱功能，填完后仅停留在当前动态编辑页交由作者手动确认发布，刷新或关闭标签会丢失。"
+      );
+    }
+
+    return {
+      mode: "image",
+      taskName,
+      spaceId: job.spaceId ?? null,
+      pageLabels: job.pageLabels || {},
+      platforms,
+      title,
+      description: baseDescription,
+      titleMetrics: { xhsWeight, dyLen, dyLimit, wechatTitleLen, biliLen, biliLimit },
+      images: imageMetas,
+      video: null,
+      covers: {},
+      original,
+      aiGenerated: job.aiGenerated,
+      allowActivities,
+      location: topLocation,
+      topics: baseTopics,
+      xhs: {
+        title: job.xhs?.title || title,
+        description: job.xhs?.description ?? baseDescription,
+        topics: job.xhs?.topics || baseTopics.slice(0, 5),
+        location: xhsLoc.location,
+        locationQuery: xhsLoc.locationQuery,
+      },
+      douyin: {
+        title: job.douyin?.title || title,
+        description: job.douyin?.description ?? baseDescription,
+        topics: job.douyin?.topics || baseTopics.slice(0, 5),
+        location: douyinLoc.location,
+        locationQuery: douyinLoc.locationQuery,
+        music: douyinMusic,
+        allowContinueExisting: Boolean(job.douyin?.allowContinueExisting),
+      },
+      wechat: {
+        title: wechatTitle,
+        topics: job.wechat?.topics || baseTopics.slice(0, 5),
+        description: job.wechat?.description || defaultWechatImageDesc,
+        location: wechatLoc.location,
+        locationQuery: wechatLoc.locationQuery,
+        music: wechatMusic,
+      },
+      bilibili: {
+        title: (job.bilibili?.title || title).trim(),
+        description: job.bilibili?.description ?? baseDescription,
+        topics: job.bilibili?.topics || baseTopics.slice(0, 5),
+      },
+      x: {
+        tweetText: job.x?.tweetText || "",
+      },
+      warnings,
+    };
+  }
+
+  // ========== 视频模式（原有完整逻辑，零破坏） ==========
   // 探测成片（含有效画幅黑边错配检测；pass2/finish 可传 skipFrameAudit 跳过以实现零额外耗时）
   let videoMeta = null;
   let activeViewport = null;
@@ -516,6 +713,7 @@ export function validateAndNormalizeJob(rawJob, options = {}) {
   const wechatLoc = resolvePlatformLocation(job.wechat, topLocation, topLocationQuery, true);
 
   return {
+    mode: "video",
     taskName,
     spaceId: job.spaceId ?? null,
     pageLabels: job.pageLabels || {},

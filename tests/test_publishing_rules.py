@@ -361,6 +361,134 @@ console.log(JSON.stringify(out));
                 self.assertIn('微信朋友圈', text)
                 self.assertIn('YouTube', text)
 
+    def test_image_mode_validation_and_rules(self):
+        # 1. 文档必须明确记录原生图文关键入口、上限与暗坑
+        skill = (ROOT / 'SKILL.md').read_text(encoding='utf-8')
+        gotchas = (ROOT / 'references/gotchas.md').read_text(encoding='utf-8')
+        selectors = (ROOT / 'references/selectors.md').read_text(encoding='utf-8')
+        self.assertIn('mode: "image"', skill)
+        self.assertIn('finderNewLifeCreate', skill)
+        self.assertIn('waitForFileChooser', gotchas)
+        self.assertIn('feature-guide__btn', selectors)
+
+        # 2. 校验 scripts/run.mjs 对图文模式（自动推导与显式 mode="image"）的 dry-run
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            sample_img = str(ROOT / 'fixtures/cover-3x4.png')
+
+            # 2a) 自动推导 image 模式 + 默认国内三平台 + 19 字通用标题 + 未配 BGM 预警
+            job_ok = tmp / 'img_ok.json'
+            job_ok.write_text(
+                json.dumps(
+                    {
+                        'title': '12.19 示例实战小班｜1页看懂',
+                        'images': [sample_img],
+                        'description': '第一行说明\n第二行说明',
+                        'topics': ['AI工具', '人工智能'],
+                        'original': True,
+                        'aiGenerated': False,
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding='utf-8',
+            )
+            r_ok = subprocess.run(
+                ['node', str(ROOT / 'scripts/run.mjs'), '--job', str(job_ok), '--dry-run'],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(r_ok.returncode, 0, f'Image dry-run failed: {r_ok.stderr}\n{r_ok.stdout}')
+            norm = json.loads(r_ok.stdout)['normalized']
+            self.assertEqual(norm['mode'], 'image')
+            self.assertEqual(norm['platforms'], ['xhs', 'douyin', 'wechat'])
+            self.assertEqual(len(norm['images']), 1)
+            self.assertEqual(norm['images'][0]['width'], 240)
+            self.assertEqual(norm['images'][0]['height'], 320)
+            self.assertEqual(norm['wechat']['location'], '不显示位置')
+            self.assertEqual(norm['wechat']['title'], '12.19 示例实战小班｜1页看懂')
+            self.assertTrue(any('BGM' in w for w in norm['warnings']))
+
+            # 2b) 抖音图文 20 字硬拦截（21 字应报错）
+            job_dy21 = tmp / 'img_dy21.json'
+            job_dy21.write_text(
+                json.dumps(
+                    {
+                        'mode': 'image',
+                        'title': '一二三四五六七八九十一二三四五六七八九十一',  # 21 字
+                        'images': [sample_img],
+                        'topics': ['AI'],
+                        'aiGenerated': False,
+                        'music': '钢琴',
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding='utf-8',
+            )
+            r_dy21 = subprocess.run(
+                ['node', str(ROOT / 'scripts/run.mjs'), '--job', str(job_dy21), '--dry-run'],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(r_dy21.returncode, 0, 'Expected 21-char Douyin image title to be blocked')
+            self.assertIn('21/20', r_dy21.stderr)
+
+            # 2c) 抖音图文显式提供 <=20 字覆写标题 + music 配置归一化通过
+            job_override = tmp / 'img_override.json'
+            job_override.write_text(
+                json.dumps(
+                    {
+                        'mode': 'image',
+                        'title': '12.19 示例 AI 实战小班｜1页看懂',  # 21 字符，XHS 加权 <=20，视频号 <=22
+                        'images': [sample_img],
+                        'topics': ['AI'],
+                        'aiGenerated': False,
+                        'douyin': {'title': '12.19 示例AI实战小班｜1页看懂', 'music': '轻柔钢琴纯音乐'},
+                        'wechat': {'music': 'none'},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding='utf-8',
+            )
+            r_ov = subprocess.run(
+                ['node', str(ROOT / 'scripts/run.mjs'), '--job', str(job_override), '--dry-run'],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(r_ov.returncode, 0, f'Image override dry-run failed: {r_ov.stderr}\n{r_ov.stdout}')
+            norm_ov = json.loads(r_ov.stdout)['normalized']
+            self.assertEqual(norm_ov['douyin']['music']['action'], 'search')
+            self.assertEqual(norm_ov['douyin']['music']['query'], '轻柔钢琴纯音乐')
+            self.assertEqual(norm_ov['wechat']['music']['action'], 'none')
+            self.assertFalse(any('BGM' in w for w in norm_ov['warnings']))
+
+            # 2d) 拒绝不支持的 .gif 图片格式
+            fake_gif = tmp / 'anim.gif'
+            fake_gif.write_bytes(b'GIF89a')
+            job_gif = tmp / 'img_gif.json'
+            job_gif.write_text(
+                json.dumps(
+                    {
+                        'mode': 'image',
+                        'title': 'GIF 拦截测试',
+                        'images': [str(fake_gif)],
+                        'aiGenerated': False,
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding='utf-8',
+            )
+            r_gif = subprocess.run(
+                ['node', str(ROOT / 'scripts/run.mjs'), '--job', str(job_gif), '--dry-run'],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(r_gif.returncode, 0, 'Expected .gif to be blocked in image mode')
+            self.assertIn('.gif', r_gif.stderr)
+
 
 if __name__ == '__main__':
     unittest.main()
