@@ -1,6 +1,8 @@
 import {
   bringToFront,
+  calcUploadTimeoutMs,
   collectLightDiagnostics,
+  isDurationMatch,
   makeFallback,
   makeHandoff,
   muteAndPausePage,
@@ -59,6 +61,7 @@ export async function wechatFillAndSave(page, job) {
     await bringToFront(page);
     await muteAndPausePage(page);
 
+    const uploadTimeoutMs = calcUploadTimeoutMs(job.video?.sizeBytes, 120000, 360000);
     await page
       .waitForFunction(
         () => {
@@ -68,21 +71,41 @@ export async function wechatFillAndSave(page, job) {
           const ed = root.querySelector("div.input-editor");
           const locked =
             txt.includes("文件上传中") || txt.includes("转码中") || txt.includes("取消上传") || txt.includes("处理中");
-          return !!ed && !locked;
+          const hasValidVideo = [...root.querySelectorAll("video")].some(
+            (v) => Number.isFinite(v.duration) && v.duration > 0.5
+          );
+          return !!ed && !locked && hasValidVideo;
         },
         undefined,
-        { timeout: 60000 }
+        { timeout: uploadTimeoutMs }
       )
       .catch(() => {});
     await muteAndPausePage(page);
 
-    const stillLocked = await page.evaluate(() => {
+    const uploadState = await page.evaluate(() => {
       const root = document.querySelector("wujie-app")?.shadowRoot;
       const txt = root?.body?.innerText || "";
-      return txt.includes("文件上传中") || txt.includes("转码中") || txt.includes("取消上传");
+      const stillLocked =
+        txt.includes("文件上传中") || txt.includes("转码中") || txt.includes("取消上传") || txt.includes("处理中");
+      const validVideos = [...(root?.querySelectorAll("video") || [])]
+        .map((v) => ({
+          rs: v.readyState,
+          dur: Number.isFinite(v.duration) ? Number(v.duration.toFixed(2)) : null,
+          vw: v.videoWidth,
+          vh: v.videoHeight,
+        }))
+        .filter((v) => v.dur && v.dur > 0.5);
+      return { stillLocked, validVideos };
     });
-    if (stillLocked) {
-      return makeFallback("wait_unlock", "微信视频号仍在上传或转码锁定中，稍后再试或由 Agent 接手等待。", await collectLightDiagnostics(page, true));
+    if (uploadState.stillLocked || uploadState.validVideos.length === 0) {
+      return makeFallback(
+        "wait_unlock",
+        uploadState.stillLocked
+          ? "微信视频号仍在上传或转码锁定中，稍后再试或由 Agent 接手等待。"
+          : "微信视频号未检测到已就绪的有效视频（validVideos 为空），已中止继续填稿。",
+        await collectLightDiagnostics(page, true),
+        { uploadState }
+      );
     }
 
     // 1. 视频描述（原标题 + #话题）与可选短标题
@@ -624,6 +647,14 @@ export async function wechatVerifyAndLabel(task, origPage, job) {
             }
           : { noImg: true };
       };
+      const validVideos = [...root.querySelectorAll("video")]
+        .map((v) => ({
+          rs: v.readyState,
+          dur: Number.isFinite(v.duration) ? Number(v.duration.toFixed(2)) : null,
+          vw: v.videoWidth,
+          vh: v.videoHeight,
+        }))
+        .filter((v) => v.dur && v.dur > 0.5);
       return {
         desc: ed?.innerText?.trim() || "",
         hl,
@@ -635,11 +666,24 @@ export async function wechatVerifyAndLabel(task, origPage, job) {
         h4x3: probe(".horizon-img-wrap"),
         hasTargetLabel: bodyText.includes(lbl),
         hasPlaceholderLabel: bodyText.includes("选择视频标注"),
+        validVideoCount: validVideos.length,
+        videoDurationSec: validVideos[0]?.dur ?? null,
       };
     }, targetLabel);
 
     const issues = [];
     if (!listMatch.found) issues.push("草稿箱列表未查到本条草稿");
+    if (origPageFinal.validVideoCount === 0) {
+      issues.push("微信视频号原编辑页未检测到已加载的有效视频播放器");
+    } else if (
+      origPageFinal.videoDurationSec != null &&
+      job.video?.durationSec &&
+      !isDurationMatch(origPageFinal.videoDurationSec, job.video.durationSec)
+    ) {
+      issues.push(
+        `微信视频号视频时长不符（实读 ${origPageFinal.videoDurationSec}s，期望约 ${job.video.durationSec}s）`
+      );
+    }
     const expectedLoc = job.wechat.location || WECHAT_NO_LOCATION;
     if (!origPageFinal.pos.includes(expectedLoc)) {
       issues.push(`位置不符: 期望「${expectedLoc}」，实际「${origPageFinal.pos}」`);

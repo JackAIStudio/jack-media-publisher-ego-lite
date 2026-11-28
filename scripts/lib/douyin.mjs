@@ -1,6 +1,8 @@
 import {
   bringToFront,
+  calcUploadTimeoutMs,
   collectLightDiagnostics,
+  isDurationMatch,
   makeFallback,
   makeHandoff,
   muteAndPausePage,
@@ -391,19 +393,80 @@ export async function douyinFillAndSave(page, job) {
       locationLog = { skipped: false, target: targetLoc, query: queryLoc, selected: picked.best.name, candidates: picked.candidates };
     }
 
-    // 5. 等待视频上传结束并点「暂存离开」
-    step = "save_draft";
-    await page
-      .waitForFunction(
-        () => {
-          const t = document.body?.innerText || "";
-          return !t.includes("上传中") && !t.includes("正在上传");
-        },
-        undefined,
-        { timeout: 25000 }
-      )
-      .catch(() => {});
+    // 5. 硬等待视频真正上传完成（绝不在未传完时硬点「暂存离开」导致静默丢视频）
+    step = "wait_upload";
+    const uploadTimeoutMs = calcUploadTimeoutMs(job.video?.sizeBytes, 120000, 360000);
+    const waitStart = Date.now();
+    let uploadReady = false;
+    let lastUploadState = null;
 
+    while (Date.now() - waitStart < uploadTimeoutMs) {
+      await muteAndPausePage(page);
+      lastUploadState = await page.evaluate(() => {
+        const txt = (document.body?.innerText || "").replace(/\s+/g, " ");
+        const vids = [...document.querySelectorAll("video")].map((v) => ({
+          rs: v.readyState,
+          dur: Number.isFinite(v.duration) ? Number(v.duration.toFixed(2)) : null,
+          vw: v.videoWidth,
+          vh: v.videoHeight,
+          srcHost: (() => {
+            try {
+              return new URL(v.currentSrc || v.src).host;
+            } catch {
+              return "";
+            }
+          })(),
+        }));
+        const validVids = vids.filter((v) => v.dur && v.dur > 0.5);
+        const hasCloudVideo = validVids.some((v) => v.srcHost && !v.srcHost.startsWith("blob"));
+        const hasReupload = txt.includes("重新上传") || txt.includes("更换视频");
+        const hasEmptyPrompt =
+          txt.includes("将视频文件拖入此区域") || (txt.includes("点击上传") && !hasReupload);
+        // 精准区分「视频上传中」与右下角「发文助手 快速检测 检测中 xx%」，避免被检测进度误卡死
+        const isUploading =
+          /上传中|正在上传|取消上传|转码中|已上传\s*\d+%/.test(txt) ||
+          (!hasReupload && !hasCloudVideo && validVids.length === 0);
+        return { vids, validVids, hasCloudVideo, hasReupload, hasEmptyPrompt, isUploading };
+      });
+
+      if (
+        !lastUploadState.hasEmptyPrompt &&
+        !lastUploadState.isUploading &&
+        (lastUploadState.hasCloudVideo || (lastUploadState.hasReupload && lastUploadState.validVids.length > 0))
+      ) {
+        // 短稳复核 2 秒，确认已稳定落盘云端而非瞬态状态
+        await page.waitForTimeout(2000);
+        const confirmDone = await page.evaluate(() => {
+          const txt = (document.body?.innerText || "").replace(/\s+/g, " ");
+          const hasReupload = txt.includes("重新上传") || txt.includes("更换视频");
+          const hasValidVid = [...document.querySelectorAll("video")].some(
+            (v) => Number.isFinite(v.duration) && v.duration > 0.5
+          );
+          return (
+            !txt.includes("将视频文件拖入此区域") &&
+            !/上传中|正在上传|取消上传|转码中/.test(txt) &&
+            (hasReupload || hasValidVid)
+          );
+        });
+        if (confirmDone) {
+          uploadReady = true;
+          break;
+        }
+      }
+
+      await page.waitForTimeout(2500);
+    }
+
+    if (!uploadReady) {
+      return makeFallback(
+        "wait_upload",
+        `抖音等待视频上传完成超时（已等 ${Math.round((Date.now() - waitStart) / 1000)}s），为防静默丢视频已中止点击「暂存离开」`,
+        await collectLightDiagnostics(page),
+        { topicLogs, coverLog, locationLog, lastUploadState }
+      );
+    }
+
+    step = "save_draft";
     await page.evaluate(() => {
       const btn = [...document.querySelectorAll("button")].find(
         (b) => (b.innerText || "").trim() === "暂存离开" && b.getBoundingClientRect().height > 0
@@ -426,7 +489,18 @@ export async function douyinFillAndSave(page, job) {
       });
     }
 
-    return { status: "ok", topicLogs, coverLog, locationLog, afterSave };
+    return {
+      status: "ok",
+      topicLogs,
+      coverLog,
+      locationLog,
+      uploadEvidence: {
+        hasReupload: lastUploadState?.hasReupload || false,
+        validVids: lastUploadState?.validVids?.slice(0, 2) || [],
+        waitedSec: Math.round((Date.now() - waitStart) / 1000),
+      },
+      afterSave,
+    };
   } catch (err) {
     return makeFallback(step, err, await collectLightDiagnostics(page));
   }
@@ -456,8 +530,8 @@ export async function douyinReopenAndVerify(page, job) {
       const ed = document.querySelector("div.zone-container.editor-kit-container");
       const mentions = [...(ed?.querySelectorAll("[data-mention]") || [])].map((e) => e.textContent?.trim());
       const decl = document.querySelector(".selectBox-buZRzi")?.innerText?.trim() || "";
-      const covers = [...document.querySelectorAll(".coverControl-CjlzqC")].map((c) => ({
-        slot: (c.innerText || "").replace(/\s+/g, " ").slice(0, 20),
+      const covers = [...document.querySelectorAll('.coverControl-CjlzqC, [class*="coverControl"], [class*="cover-yb"]')].map((c) => ({
+        slot: (c.innerText || "").replace(/\s+/g, " ").slice(0, 24),
         imgs: [...c.querySelectorAll("img")].map((img) => ({
           nw: img.naturalWidth,
           nh: img.naturalHeight,
@@ -471,13 +545,39 @@ export async function douyinReopenAndVerify(page, job) {
           })(),
         })),
       }));
+      const allCoverImgs = [...document.querySelectorAll("img")]
+        .filter((img) => img.naturalWidth >= 400 && img.naturalHeight >= 400)
+        .map((img) => ({
+          nw: img.naturalWidth,
+          nh: img.naturalHeight,
+          ratio: Number((img.naturalWidth / img.naturalHeight).toFixed(3)),
+          host: (() => {
+            try {
+              return new URL(img.currentSrc || img.src).host;
+            } catch {
+              return "";
+            }
+          })(),
+        }));
       const vids = [...document.querySelectorAll("video")].map((v) => ({
         rs: v.readyState,
-        dur: Number(v.duration?.toFixed?.(2)),
+        dur: Number.isFinite(v.duration) ? Number(v.duration.toFixed(2)) : null,
         vw: v.videoWidth,
         vh: v.videoHeight,
+        srcHost: (() => {
+          try {
+            return new URL(v.currentSrc || v.src).host;
+          } catch {
+            return "";
+          }
+        })(),
       }));
+      const validVids = vids.filter((v) => v.dur && v.dur > 0.5);
       const txt = (document.body?.innerText || "").replace(/\s+/g, " ");
+      const hasReupload = txt.includes("重新上传") || txt.includes("更换视频");
+      const hasEmptyUploadPrompt =
+        txt.includes("将视频文件拖入此区域") || (txt.includes("点击上传") && !hasReupload);
+      const stillUploading = /上传中|正在上传|取消上传|转码中/.test(txt);
       const linkedActivities = [];
       for (const labelEl of document.querySelectorAll("div, span, label, p")) {
         if (labelEl.children.length > 0) continue;
@@ -517,13 +617,37 @@ export async function douyinReopenAndVerify(page, job) {
         decl,
         missingCoverWarn: txt.includes("横/竖双封面缺失"),
         linkedActivities: [...new Set(linkedActivities)],
+        hasEmptyUploadPrompt,
+        hasReupload,
+        stillUploading,
         covers,
+        allCoverImgs: allCoverImgs.slice(0, 8),
         vids,
+        validVideoCount: validVids.length,
+        videoDurationSec: validVids[0]?.dur ?? null,
       };
     });
 
     const issues = [];
     const expectedDecl = job.aiGenerated ? "内容由AI生成" : "无需添加自主声明";
+    if (verified.hasEmptyUploadPrompt) {
+      issues.push("复开后视频丢失：页面仍显示「点击上传 / 将视频文件拖入此区域」");
+    }
+    if (verified.stillUploading) {
+      issues.push("复开后视频仍处于上传/转码中状态");
+    }
+    if (verified.validVideoCount === 0 && !verified.hasReupload) {
+      issues.push("复开后未检测到有效视频播放器（vids 为空且无「重新上传」入口）");
+    }
+    if (
+      verified.videoDurationSec != null &&
+      job.video?.durationSec &&
+      !isDurationMatch(verified.videoDurationSec, job.video.durationSec)
+    ) {
+      issues.push(
+        `复开后视频时长不符（页面实读 ${verified.videoDurationSec}s，期望约 ${job.video.durationSec}s，可能复开了别的作品）`
+      );
+    }
     if (verified.title !== job.douyin.title) issues.push(`标题不一致（可能复开了别的稿）: "${verified.title}"`);
     if (verified.mentions.length < job.douyin.topics.length) {
       issues.push(`话题实体数量不足: ${verified.mentions.length}/${job.douyin.topics.length}`);
@@ -543,6 +667,8 @@ export async function douyinReopenAndVerify(page, job) {
       const hRatio = hSlot?.imgs?.[0]?.ratio || 0;
       if (hSlot && hRatio < 1.15) {
         issues.push(`抖音横封面比例异常 (ratio=${hRatio})，疑似未落入 4:3 横图`);
+      } else if (!hSlot && !verified.allCoverImgs.some((i) => i.ratio >= 1.15 && i.ratio <= 1.6)) {
+        issues.push("抖音复开页未检测到 4:3 横封面大图");
       }
     }
     if (job.douyin.cover3x4) {
@@ -550,6 +676,8 @@ export async function douyinReopenAndVerify(page, job) {
       const vRatio = vSlot?.imgs?.[0]?.ratio || 0;
       if (vSlot && (vRatio <= 0 || vRatio > 0.9)) {
         issues.push(`抖音竖封面比例异常 (ratio=${vRatio})，疑似被横封面覆盖`);
+      } else if (!vSlot && !verified.allCoverImgs.some((i) => i.ratio >= 0.6 && i.ratio <= 0.9)) {
+        issues.push("抖音复开页未检测到 3:4 竖封面大图");
       }
     }
 

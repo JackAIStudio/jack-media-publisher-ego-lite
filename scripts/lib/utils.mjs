@@ -128,3 +128,25 @@ export function makeHandoff(step, reason, details = {}) {
     ...details,
   };
 }
+
+/**
+ * 按成片体积动态计算上传/转码等待超时，避免 100MB+ 大文件或五平台并发上传时过早放弃。
+ * 每 50MB 增加 45 秒，默认区间 [minMs, maxMs]。
+ */
+export function calcUploadTimeoutMs(sizeBytes, minMs = 120000, maxMs = 360000) {
+  const mb = Math.max(0, Number(sizeBytes || 0) / (1024 * 1024));
+  const estimated = Math.round(minMs + Math.ceil(mb / 50) * 45000);
+  return Math.max(minMs, Math.min(maxMs, estimated));
+}
+
+/**
+ * 核对网页播放器读出的视频时长是否与本地 ffprobe 时长一致（允许少量封装误差）。
+ */
+export function isDurationMatch(actualSec, expectedSec) {
+  const a = Number(actualSec);
+  const e = Number(expectedSec);
+  if (!Number.isFinite(a) || a <= 0) return false;
+  if (!Number.isFinite(e) || e <= 0) return true;
+  const tol = Math.max(4, e * 0.1);
+  return Math.abs(a - e) <= tol;
+}

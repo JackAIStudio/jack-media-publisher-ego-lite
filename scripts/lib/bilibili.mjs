@@ -1,5 +1,6 @@
 import {
   bringToFront,
+  calcUploadTimeoutMs,
   collectLightDiagnostics,
   makeFallback,
   makeHandoff,
@@ -293,11 +294,25 @@ export async function bilibiliFillAndSave(page, job) {
       await page.waitForTimeout(2300);
     }
 
-    // 6. 等上传完成并点「存草稿」
-    step = "save_draft";
+    // 6. 硬等待「上传完成」（按体积动态超时，绝不在未传完时硬点「存草稿」）
+    step = "wait_upload";
+    const uploadTimeoutMs = calcUploadTimeoutMs(job.video?.sizeBytes, 120000, 360000);
+    const waitStart = Date.now();
     await page
-      .waitForFunction(() => (document.body?.innerText || "").includes("上传完成"), undefined, { timeout: 25000 })
+      .waitForFunction(() => (document.body?.innerText || "").includes("上传完成"), undefined, { timeout: uploadTimeoutMs })
       .catch(() => {});
+
+    const uploadDone = await page.evaluate(() => (document.body?.innerText || "").includes("上传完成"));
+    if (!uploadDone) {
+      return makeFallback(
+        "wait_upload",
+        `B 站等待「上传完成」超时（已等 ${Math.round((Date.now() - waitStart) / 1000)}s），为防草稿丢视频已中止点击「存草稿」`,
+        await collectLightDiagnostics(page),
+        { removedAutoTags, tagsAfter, missingTags, coverLog }
+      );
+    }
+
+    step = "save_draft";
     await page.evaluate(() => {
       const btn = [...document.querySelectorAll("span, div, button")].find(
         (el) => el.children.length === 0 && (el.textContent || "").trim() === "存草稿"
@@ -387,7 +402,9 @@ export async function bilibiliReopenAndVerify(page, job) {
         ".auth-content .option-text-selected, .auth-content.option-text-selected"
       );
       const quill = document.querySelector("div.ql-editor")?.innerText?.trim() || "";
-      const uploadComplete = (document.body?.innerText || "").includes("上传完成");
+      const bodyTxt = document.body?.innerText || "";
+      const uploadComplete = bodyTxt.includes("上传完成");
+      const hasEmptyUploadPrompt = bodyTxt.includes("拖拽到此处也可上传");
       const linkedActivities = [];
       for (const c of document.querySelectorAll(".label-item-v2-container")) {
         const cls = (c.className || "").toString();
@@ -466,6 +483,7 @@ export async function bilibiliReopenAndVerify(page, job) {
         url,
         draftId,
         uploadComplete,
+        hasEmptyUploadPrompt,
         title,
         cat,
         tags,
@@ -481,7 +499,9 @@ export async function bilibiliReopenAndVerify(page, job) {
     const issues = [];
     const expectedOpt = job.aiGenerated ? "含AI生成内容" : "内容无需标注";
     const wantAuth = job.bilibili?.authDeclaration === true;
-    if (!verified.uploadComplete) issues.push("未检测到「上传完成」信号");
+    if (!verified.uploadComplete || verified.hasEmptyUploadPrompt) {
+      issues.push("未检测到「上传完成」信号或仍处于空上传状态");
+    }
     if (verified.title !== job.bilibili.title) issues.push(`标题不一致: "${verified.title}"`);
     if (verified.cat !== job.bilibili.category) issues.push(`分区不一致: 期望「${job.bilibili.category}」，实际「${verified.cat}」`);
     if (job.aiGenerated) {

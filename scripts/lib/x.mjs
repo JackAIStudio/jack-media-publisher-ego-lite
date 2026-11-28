@@ -1,5 +1,13 @@
 import path from "node:path";
-import { bringToFront, collectLightDiagnostics, makeFallback, makeHandoff, muteAndPausePage } from "./utils.mjs";
+import {
+  bringToFront,
+  calcUploadTimeoutMs,
+  collectLightDiagnostics,
+  isDurationMatch,
+  makeFallback,
+  makeHandoff,
+  muteAndPausePage,
+} from "./utils.mjs";
 
 export const X_URL = "https://studio.x.com/library";
 
@@ -58,15 +66,17 @@ export async function xFillAndSave(page, job) {
     await muteAndPausePage(page);
 
     const fileName = path.basename(job.x.videoPath || job.video.path);
+    const expectedDurSec = Number(job.video?.durationSec || 0);
+    const uploadTimeoutMs = calcUploadTimeoutMs(job.video?.sizeBytes, 180000, 360000);
     const start = Date.now();
     let itemReady = false;
     let lastWindow = "";
-    while (Date.now() - start < 120000) {
+    while (Date.now() - start < uploadTimeoutMs) {
       const st = await page.evaluate((fn) => {
         const t = (document.body?.innerText || "").replace(/\s+/g, " ");
         const idx = t.indexOf(fn);
         const win = idx >= 0 ? t.slice(Math.max(0, idx - 60), idx + 120) : t.slice(0, 260);
-        const uploading = /正在载入|正在上传|处理中|Uploading|Processing|\d+%/.test(win);
+        const uploading = /正在载入|正在上传|正在处理|处理中|Uploading|Processing|\d+%/.test(win);
         return { found: idx >= 0, uploading, win };
       }, fileName);
       lastWindow = st.win;
@@ -83,32 +93,14 @@ export async function xFillAndSave(page, job) {
       });
     }
 
+    // 优先通过 /1/library/list.json 按「文件名 + 时长 + 未发帖」精准锁定本条 media_key，
+    // 防止上传间隙作者并发发布其他视频或媒体库存在历史同名文件（如多个 v2.mov）导致误选错稿！
     step = "open_detail";
-    const clickPos = await page.evaluate((fn) => {
-      const el = [...document.querySelectorAll("div, span, p, h1, h2, h3, h4, a")].find(
-        (n) => (n.textContent || "").trim() === fn
-      );
-      if (!el) return null;
-      const r = el.getBoundingClientRect();
-      return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
-    }, fileName);
-    if (!clickPos) {
-      return makeFallback("open_detail", `未在媒体库列表中定位到 ${fileName}`, await collectLightDiagnostics(page));
-    }
-
-    await page.mouse.click(clickPos.x, clickPos.y, { label: "open X media detail" });
-    await page.waitForTimeout(2500);
-    await muteAndPausePage(page);
-
-    let editUrl = await page.evaluate(() => location.href);
-    let mediaKey = editUrl.match(/\/library\/([^/?#]+)\/edit/)?.[1] || null;
-
-    // 兜底：新上传视频在「缩略图不可用」阶段点击卡片可能不跳转，直接通过 /1/library/list.json 取最新 media_key 直达 /edit
-    if (!mediaKey) {
-      const latestKey = await page.evaluate(async () => {
+    const apiMatch = await page.evaluate(
+      async ({ fn, expDur }) => {
         const csrf = (document.cookie.match(/(?:^|;\s*)ct0=([^;]+)/) || [])[1] || "";
         const uid = (document.cookie.match(/(?:^|;\s*)twid=u%3D(\d+)/) || [])[1] || "";
-        const res = await fetch(`/1/library/list.json?user_id=${uid}&count=5`, {
+        const res = await fetch(`/1/library/list.json?user_id=${uid}&count=10`, {
           credentials: "include",
           headers: {
             "x-csrf-token": csrf,
@@ -116,36 +108,95 @@ export async function xFillAndSave(page, job) {
             "x-twitter-auth-type": "OAuth2Session",
           },
         });
-        if (!res.ok) return null;
-        const text = await res.text();
-        return (text.match(/"media_key":"([^"]+)"/) || [])[1] || null;
-      });
-      if (latestKey) {
-        await page.goto(`https://studio.x.com/library/${latestKey}/edit`, { timeout: 30000 });
-        await page.waitForTimeout(2500);
-        await muteAndPausePage(page);
-        editUrl = await page.evaluate(() => location.href);
-        mediaKey = editUrl.match(/\/library\/([^/?#]+)\/edit/)?.[1] || null;
+        if (!res.ok) return { ok: false, status: res.status };
+        let parsed = null;
+        try {
+          parsed = await res.json();
+        } catch {
+          return { ok: false, parseError: true };
+        }
+        const rows = (parsed?.results || []).map((item) => {
+          const durMs = Number(item?.content?.duration || 0);
+          return {
+            mediaKey: item?.media_key || null,
+            filename: item?.metadata?.filename || item?.metadata?.name || "",
+            title: item?.metadata?.title || "",
+            tweeted: !!item?.metadata?.tweeted,
+            durSec: durMs > 0 ? Number((durMs / 1000).toFixed(2)) : null,
+            created: item?.metadata?.time_created || "",
+          };
+        });
+        const durOk = (d) => {
+          if (!expDur || !d) return true;
+          const tol = Math.max(4, expDur * 0.1);
+          return Math.abs(d - expDur) <= tol;
+        };
+        const exactUntweeted = rows.find((r) => r.mediaKey && !r.tweeted && r.filename === fn && durOk(r.durSec));
+        const exactAny = rows.find((r) => r.mediaKey && r.filename === fn && durOk(r.durSec));
+        const untweetedDur = rows.find((r) => r.mediaKey && !r.tweeted && durOk(r.durSec) && !r.title);
+        const picked = exactUntweeted || exactAny || untweetedDur || null;
+        return {
+          ok: !!picked,
+          picked,
+          matchedBy: exactUntweeted ? "untweeted+filename+duration" : exactAny ? "filename+duration" : untweetedDur ? "untweeted+duration" : null,
+          topRows: rows.slice(0, 5),
+        };
+      },
+      { fn: fileName, expDur: expectedDurSec }
+    );
+
+    let mediaKey = apiMatch?.picked?.mediaKey || null;
+    let editUrl = "";
+    if (mediaKey) {
+      await page.goto(`https://studio.x.com/library/${mediaKey}/edit`, { timeout: 30000 });
+      await page.waitForSelector('input[name="media.metadata.title"]', { state: "visible", timeout: 20000 }).catch(() => {});
+      await muteAndPausePage(page);
+      editUrl = await page.evaluate(() => location.href);
+      mediaKey = editUrl.match(/\/library\/([^/?#]+)\/edit/)?.[1] || null;
+    } else {
+      // 仅在 list.json 无法命中时才回退点击页面卡片，且回读校验时长防止点错历史同名文件
+      const clickPos = await page.evaluate((fn) => {
+        const el = [...document.querySelectorAll("div, span, p, h1, h2, h3, h4, a")].find(
+          (n) => (n.textContent || "").trim() === fn
+        );
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+      }, fileName);
+      if (!clickPos) {
+        return makeFallback("open_detail", `未在媒体库列表中精准匹配到 ${fileName} (约 ${expectedDurSec}s)`, await collectLightDiagnostics(page), {
+          apiMatch,
+        });
       }
+      await page.mouse.click(clickPos.x, clickPos.y, { label: "open X media detail" });
+      await page.waitForTimeout(2500);
+      await muteAndPausePage(page);
+      editUrl = await page.evaluate(() => location.href);
+      mediaKey = editUrl.match(/\/library\/([^/?#]+)\/edit/)?.[1] || null;
     }
 
     if (!mediaKey) {
-      return makeFallback("open_detail", `点击媒体卡片后未进入 /library/<mediaKey>/edit (${editUrl})`, await collectLightDiagnostics(page));
+      return makeFallback("open_detail", `未能进入目标视频的 /library/<mediaKey>/edit (${editUrl})`, await collectLightDiagnostics(page), {
+        apiMatch,
+      });
     }
 
     step = "metadata";
+    await page.click('input[name="media.metadata.title"]', { label: "focus X media title input" });
     await page.fill('input[name="media.metadata.title"]', job.x.title);
-    await page.waitForTimeout(250);
+    await page.keyboard.press("Tab");
+    await page.waitForTimeout(400);
     if (job.x.description) {
       await page.fill('textarea[name="media.metadata.description"]', job.x.description);
-      await page.waitForTimeout(250);
+      await page.keyboard.press("Tab");
+      await page.waitForTimeout(300);
     }
     await page.evaluate(() => {
       const el = document.querySelector('input[name="media.metadata.title"]');
       el?.dispatchEvent(new Event("change", { bubbles: true }));
       el?.blur();
     });
-    await page.waitForTimeout(800);
+    await page.waitForTimeout(1000);
 
     step = "thumbnail";
     let thumbUploaded = false;
@@ -157,7 +208,7 @@ export async function xFillAndSave(page, job) {
       await page.click('a:text-is("上传")', { label: "click X thumbnail upload link" });
       const chooser = await chooserPromise;
       await chooser.setFiles(xCoverPath);
-      await page.waitForTimeout(4500);
+      await page.waitForTimeout(5500);
       thumbUploaded = true;
     }
 
@@ -171,11 +222,64 @@ export async function xFillAndSave(page, job) {
       await page.waitForTimeout(2500);
     }
 
+    // 回读 /1/library/get.json 确认标题、时长与自定义缩略图确实已落盘到本条 mediaKey
+    step = "save_verify";
+    let saveCheck = null;
+    const vt0 = Date.now();
+    while (Date.now() - vt0 < 20000) {
+      saveCheck = await page.evaluate(async (mk) => {
+        const csrf = (document.cookie.match(/(?:^|;\s*)ct0=([^;]+)/) || [])[1] || "";
+        const uid = (document.cookie.match(/(?:^|;\s*)twid=u%3D(\d+)/) || [])[1] || "";
+        const res = await fetch(`/1/library/get.json?user_id=${uid}&media_key=${mk}`, {
+          credentials: "include",
+          headers: {
+            "x-csrf-token": csrf,
+            "x-twitter-active-user": "yes",
+            "x-twitter-auth-type": "OAuth2Session",
+          },
+        });
+        const text = await res.text();
+        let parsed = null;
+        try {
+          parsed = JSON.parse(text);
+        } catch {}
+        const meta = parsed?.result?.metadata || parsed?.metadata || null;
+        const content = parsed?.result?.content || parsed?.content || null;
+        const previewSrc = content?.preview?.source || "";
+        return {
+          status: res.status,
+          title: meta?.title ?? null,
+          description: meta?.description ?? "",
+          durSec: content?.duration ? Number((Number(content.duration) / 1000).toFixed(2)) : null,
+          hasMediaThumb: /https:\/\/pbs\.twimg\.com\/media\//.test(previewSrc || text),
+        };
+      }, mediaKey);
+      if (
+        saveCheck.status === 200 &&
+        saveCheck.title === job.x.title &&
+        (!xCoverPath || saveCheck.hasMediaThumb)
+      ) {
+        break;
+      }
+      await page.waitForTimeout(2000);
+    }
+
+    if (saveCheck?.durSec && expectedDurSec && !isDurationMatch(saveCheck.durSec, expectedDurSec)) {
+      return makeFallback(
+        "save_verify",
+        `X 媒体时长不符（mediaKey=${mediaKey} 实读 ${saveCheck.durSec}s，期望 ${expectedDurSec}s），疑似定位到错误视频`,
+        await collectLightDiagnostics(page),
+        { mediaKey, saveCheck }
+      );
+    }
+
     return {
       status: "ok",
       mediaKey,
+      matchedBy: apiMatch?.matchedBy || "card_click",
       editUrl,
       thumbUploaded,
+      saveCheck,
     };
   } catch (err) {
     return makeFallback(step, `X Media Studio 填稿失败: ${err.message}`, await collectLightDiagnostics(page));
@@ -221,12 +325,15 @@ export async function xVerifyAndCompose(page, job) {
           parsed = JSON.parse(text);
         } catch {}
         const meta = parsed?.result?.metadata || parsed?.metadata || parsed?.media?.metadata || null;
+        const content = parsed?.result?.content || parsed?.content || null;
+        const durMs = Number(content?.duration || 0);
         return {
           status: res.status,
           mediaThumb,
           ampThumb,
           title: meta?.title ?? (text.match(/"title":"([^"]*)"/) || [])[1] ?? null,
           description: meta?.description ?? (text.match(/"description":"([^"]*)"/) || [])[1] ?? "",
+          durSec: durMs > 0 ? Number((durMs / 1000).toFixed(2)) : null,
         };
       }, mediaKey);
       if (!xCoverPath || apiVerify.mediaThumb) break;
@@ -235,6 +342,11 @@ export async function xVerifyAndCompose(page, job) {
 
     const issues = [];
     if (apiVerify?.status !== 200) issues.push(`/1/library/get.json 返回异常 status=${apiVerify?.status}`);
+    if (apiVerify?.durSec && job.video?.durationSec && !isDurationMatch(apiVerify.durSec, job.video.durationSec)) {
+      issues.push(
+        `X 视频时长不符（mediaKey=${mediaKey} 实读 ${apiVerify.durSec}s，期望约 ${job.video.durationSec}s，疑似错选媒体）`
+      );
+    }
     if (apiVerify?.title !== job.x.title) issues.push(`标题不一致: "${apiVerify?.title}"`);
     if (!job.x.description && apiVerify?.description) {
       issues.push(`说明默认应留空，实读非空: "${apiVerify.description}"`);

@@ -1,6 +1,8 @@
 import {
   bringToFront,
+  calcUploadTimeoutMs,
   collectLightDiagnostics,
+  isDurationMatch,
   makeFallback,
   makeHandoff,
   muteAndPausePage,
@@ -262,22 +264,41 @@ export async function xhsFillAndSave(page, job) {
         range.collapse(false);
         sel.removeAllRanges();
         sel.addRange(range);
+      });
+      await page.waitForTimeout(120);
+      // 防止紧贴前一个 [话题]# 导致搜索面板无法触发
+      const needSpace = await page.evaluate(() => {
+        const txt = document.querySelector("div.tiptap.ProseMirror")?.innerText || "";
+        return txt.trim().length > 0 && !/[\s\u00a0]$/.test(txt.replace(/\n$/, ""));
+      });
+      if (needSpace) {
+        await page.keyboard.insertText(" ");
+        await page.waitForTimeout(120);
+      }
+      await page.evaluate(() => {
         document.querySelector("button.contentBtn.topic-btn")?.click();
       });
-      await page.waitForTimeout(280);
-      await page.keyboard.type(word, { delay: 45 });
+      await page.waitForTimeout(320);
+      await page.keyboard.type(word, { delay: 75 });
 
+      // 优先等待「精确同名」或前缀匹配出现，避免被默认热门推荐里的模糊包含项（如「人工智障与人工智能」）骗过抢跑
       await page
         .waitForFunction(
           (w) => {
-            const items = [...document.querySelectorAll(".tippy-box .item")];
-            return items.some((el) => (el.innerText || "").toLowerCase().includes(w.toLowerCase()));
+            const lw = w.toLowerCase();
+            const items = [...document.querySelectorAll(".tippy-box .item")].filter(
+              (el) => el.getBoundingClientRect().height > 10
+            );
+            return items.some((el) => {
+              const first = ((el.innerText || "").split("\n")[0] || "").replace(/^#/, "").trim().toLowerCase();
+              return first === lw || first.startsWith(lw);
+            });
           },
           word,
           { timeout: 6000 }
         )
         .catch(() => {});
-      await page.waitForTimeout(400);
+      await page.waitForTimeout(550);
 
       const pick = await page.evaluate((w) => {
         const items = [...document.querySelectorAll(".tippy-box .item")].filter(
@@ -305,7 +326,7 @@ export async function xhsFillAndSave(page, job) {
         return { word: w, chosen: chosen?.name || null, skippedActivity: nonActivity.length < parsed.length };
       }, word);
       topicLogs.push(pick);
-      await page.waitForTimeout(350);
+      await page.waitForTimeout(400);
     }
 
     // 3. 原创声明（只操作 .original-wrapper .d-switch，绝不误碰定时发布）
@@ -533,19 +554,88 @@ export async function xhsFillAndSave(page, job) {
       unlinkedActivities = await unlinkXhsActivities(page);
     }
 
-    // 6. 等待视频上传结束并点「暂存离开」
-    step = "save_draft";
-    await page
-      .waitForFunction(
-        () => {
-          const t = document.body?.innerText || "";
-          return !t.includes("上传中") && !t.includes("正在上传");
-        },
-        undefined,
-        { timeout: 25000 }
-      )
-      .catch(() => {});
+    // 6. 硬等待视频真正上传完成（绝不在未传完时硬点「暂存离开」导致静默丢视频）
+    step = "wait_upload";
+    const uploadTimeoutMs = calcUploadTimeoutMs(job.video?.sizeBytes, 120000, 360000);
+    const waitStart = Date.now();
+    let uploadReady = false;
+    let lastUploadState = null;
+    let stuckZeroTicks = 0;
 
+    while (Date.now() - waitStart < uploadTimeoutMs) {
+      await muteAndPausePage(page);
+      lastUploadState = await page.evaluate(() => {
+        const txt = (document.body?.innerText || "").replace(/\s+/g, " ");
+        const idx = txt.indexOf("视频文件");
+        const vidSec = idx >= 0 ? txt.slice(idx, idx + 220) : txt.slice(0, 260);
+        const hasEmptyPrompt = txt.includes("暂未上传视频") || txt.includes("拖拽或点击上传");
+        const isUploading =
+          /上传中|正在上传|取消上传|转码中|已上传\s*\d+%/.test(vidSec) ||
+          txt.includes("取消上传") ||
+          /\b上传中\s*\d+%/.test(txt);
+        const hasDoneSignal =
+          /重新上传|替换视频|上传成功|检测为高清视频|高清视频/.test(vidSec) ||
+          txt.includes("检测为高清视频") ||
+          txt.includes("替换视频");
+        const validVideos = [...document.querySelectorAll("video")]
+          .map((v) => ({
+            rs: v.readyState,
+            dur: Number.isFinite(v.duration) ? Number(v.duration.toFixed(2)) : null,
+            vw: v.videoWidth,
+            vh: v.videoHeight,
+          }))
+          .filter((v) => v.dur && v.dur > 0.5);
+        const isStuckZero = /\b0%/.test(vidSec) || hasEmptyPrompt;
+        return { vidSec, hasEmptyPrompt, isUploading, hasDoneSignal, validVideos, isStuckZero };
+      });
+
+      if (!lastUploadState.hasEmptyPrompt && !lastUploadState.isUploading && lastUploadState.hasDoneSignal) {
+        // 二次短稳复核，防止瞬态文案闪烁
+        await page.waitForTimeout(1500);
+        const confirmDone = await page.evaluate(() => {
+          const txt = (document.body?.innerText || "").replace(/\s+/g, " ");
+          const idx = txt.indexOf("视频文件");
+          const vidSec = idx >= 0 ? txt.slice(idx, idx + 220) : txt.slice(0, 260);
+          return (
+            !txt.includes("暂未上传视频") &&
+            !txt.includes("拖拽或点击上传") &&
+            !/上传中|正在上传|取消上传|转码中/.test(vidSec) &&
+            (/重新上传|替换视频|上传成功|检测为高清视频|高清视频/.test(vidSec) || txt.includes("检测为高清视频"))
+          );
+        });
+        if (confirmDone) {
+          uploadReady = true;
+          break;
+        }
+      }
+
+      if (lastUploadState.isStuckZero && Date.now() - waitStart > 40000) {
+        stuckZeroTicks++;
+        if (stuckZeroTicks >= 3) {
+          return makeFallback(
+            "wait_upload",
+            "小红书视频上传超过 40 秒仍停在 0% 或空上传槽（若原片为大体积 10-bit HEVC .mov，请征得作者同意后仅为小红书转码 8-bit H.264 + AAC MP4 兜底），已中止存草稿以防丢视频",
+            await collectLightDiagnostics(page),
+            { topicLogs, locationLog, coverResult, unlinkedActivities, lastUploadState }
+          );
+        }
+      } else {
+        stuckZeroTicks = 0;
+      }
+
+      await page.waitForTimeout(2500);
+    }
+
+    if (!uploadReady) {
+      return makeFallback(
+        "wait_upload",
+        `小红书等待视频上传完成超时（已等 ${Math.round((Date.now() - waitStart) / 1000)}s），为防静默丢视频已中止点击「暂存离开」`,
+        await collectLightDiagnostics(page),
+        { topicLogs, locationLog, coverResult, unlinkedActivities, lastUploadState }
+      );
+    }
+
+    step = "save_draft";
     try {
       await page.click('text="暂存离开"', { label: "save XHS draft", timeout: 5000 });
     } catch {
@@ -572,7 +662,19 @@ export async function xhsFillAndSave(page, job) {
       });
     }
 
-    return { status: "ok", topicLogs, locationLog, coverResult, unlinkedActivities, afterSave };
+    return {
+      status: "ok",
+      topicLogs,
+      locationLog,
+      coverResult,
+      unlinkedActivities,
+      uploadEvidence: {
+        hasDoneSignal: lastUploadState?.hasDoneSignal || false,
+        validVideos: lastUploadState?.validVideos?.slice(0, 2) || [],
+        waitedSec: Math.round((Date.now() - waitStart) / 1000),
+      },
+      afterSave,
+    };
   } catch (err) {
     return makeFallback(step, err, await collectLightDiagnostics(page));
   }
@@ -681,6 +783,18 @@ export async function xhsReopenAndVerify(page, job) {
           })(),
         }));
       const txt = (document.body?.innerText || "").replace(/\s+/g, " ");
+      const vidIdx = txt.indexOf("视频文件");
+      const vidSec = vidIdx >= 0 ? txt.slice(vidIdx, vidIdx + 180) : txt.slice(0, 220);
+      const videos = [...document.querySelectorAll("video")].map((v) => ({
+        rs: v.readyState,
+        dur: Number.isFinite(v.duration) ? Number(v.duration.toFixed(2)) : null,
+        vw: v.videoWidth,
+        vh: v.videoHeight,
+      }));
+      const validVideos = videos.filter((v) => v.dur && v.dur > 0.5);
+      const hasEmptyVideoPrompt = txt.includes("暂未上传视频") || txt.includes("拖拽或点击上传");
+      const hasReuploadOrDone =
+        /重新上传|替换视频|上传成功|检测为高清视频|高清视频/.test(vidSec) || txt.includes("检测为高清视频");
       const locDisplay = decl[1] || "";
       const selectedLocation = locDisplay && locDisplay !== "添加地点" && !locDisplay.includes("选择群聊") ? locDisplay : "";
       return {
@@ -693,7 +807,12 @@ export async function xhsReopenAndVerify(page, job) {
         decl,
         hasEvalPass: txt.includes("封面效果评估通过"),
         hasHD: txt.includes("高清视频"),
-        stillUploading: txt.includes("上传中") || txt.includes("正在上传"),
+        stillUploading: /上传中|正在上传|取消上传|转码中/.test(vidSec),
+        hasEmptyVideoPrompt,
+        hasReuploadOrDone,
+        videos: videos.slice(0, 4),
+        validVideoCount: validVideos.length,
+        videoDurationSec: validVideos[0]?.dur ?? null,
         coverImgs: coverImgs.slice(0, 4),
       };
     });
@@ -702,7 +821,22 @@ export async function xhsReopenAndVerify(page, job) {
     verified.linkedActivities = linkedActivities.map((a) => a.name);
 
     const issues = [];
+    if (verified.hasEmptyVideoPrompt) {
+      issues.push("复开后视频丢失：页面仍显示「暂未上传视频」或「拖拽或点击上传」");
+    }
     if (verified.stillUploading) issues.push("复开后视频仍处于上传中状态");
+    if (!verified.hasReuploadOrDone && verified.validVideoCount === 0) {
+      issues.push("复开后未检测到已上传视频（无有效 <video> 播放器且无「重新上传 / 高清视频」信号）");
+    }
+    if (
+      verified.videoDurationSec != null &&
+      job.video?.durationSec &&
+      !isDurationMatch(verified.videoDurationSec, job.video.durationSec)
+    ) {
+      issues.push(
+        `复开后视频时长不符（页面实读 ${verified.videoDurationSec}s，期望约 ${job.video.durationSec}s，疑似复开了别的草稿）`
+      );
+    }
     if (verified.title !== job.xhs.title) issues.push(`标题不一致: "${verified.title}"`);
     if (verified.topics.length < job.xhs.topics.length) {
       issues.push(`话题实体数量不足: 实得 ${verified.topics.length}/${job.xhs.topics.length}`);
